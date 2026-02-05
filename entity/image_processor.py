@@ -273,7 +273,7 @@ class CustomWatermarkProcessor(WatermarkProcessor):
     def __init__(self, config: Config):
         super().__init__(config)
         # 读取配置文件
-        self.logo_position = self.config.is_logo_left()
+        self.logo_position = 'left' if self.config.is_logo_left() else 'right'
         self.logo_enable = self.config.has_logo_enabled()
         self.bg_color = self.config.get_background_color()
         self.font_color_lt = self.config.get_left_top().get_color()

@@ -1,6 +1,7 @@
-import os
+from __future__ import annotations
 
-import yaml
+import copy
+
 from PIL import Image
 from PIL import ImageFont
 
@@ -40,15 +41,80 @@ FONT_SIZE = 240
 BOLD_FONT_SIZE = 260
 
 
+DEFAULT_CONFIG = {
+    "base": {
+        "alternative_bold_font": "./fonts/Roboto-Medium.ttf",
+        "alternative_font": "./fonts/Roboto-Regular.ttf",
+        "bold_font": "./fonts/AlibabaPuHuiTi-2-85-Bold.otf",
+        "bold_font_size": 1,
+        "font": "./fonts/AlibabaPuHuiTi-2-45-Light.otf",
+        "font_size": 1,
+        "quality": 100,
+    },
+    "global": {
+        "focal_length": {"use_equivalent_focal_length": False},
+        "padding_with_original_ratio": {"enable": False},
+        "shadow": {"enable": False},
+        "white_margin": {"enable": True, "width": 3},
+    },
+    "layout": {
+        "background_color": "#ffffff",
+        "elements": {
+            "left_bottom": {"color": "#757575", "is_bold": False, "name": "Model"},
+            "left_top": {"color": "#212121", "is_bold": True, "name": "LensModel"},
+            "right_bottom": {
+                "color": "#757575",
+                "is_bold": False,
+                "name": "Datetime",
+                "value": "Photo by NONE",
+            },
+            "right_top": {"color": "#212121", "is_bold": True, "name": "Param"},
+        },
+        "logo_enable": False,
+        "logo_position": "left",
+        "type": "watermark_right_logo",
+    },
+    "logo": {
+        "default": {"id": "", "path": "./logos/empty.png"},
+        "makes": {
+            "apple": {"id": "APPLE", "path": "./logos/apple.png"},
+            "canon": {"id": "Canon", "path": "./logos/canon.png"},
+            "dji": {"id": "DJI", "path": "./logos/DJI.jpg"},
+            "empty": {"id": "\u7A7A", "path": "./logos/empty.png"},
+            "fujifilm": {"id": "FUJIFILM", "path": "./logos/fujifilm.png"},
+            "hasselblad": {"id": "HASSELBLAD", "path": "./logos/hasselblad.png"},
+            "huawei": {"id": "HUAWEI", "path": "./logos/xmage.png"},
+            "leica": {"id": "leica", "path": "./logos/leica_logo.png"},
+            "nikon": {"id": "NIKON", "path": "./logos/nikon.png"},
+            "olympus": {"id": "Olympus", "path": "./logos/olympus_blue_gold.png"},
+            "panasonic": {"id": "Panasonic", "path": "./logos/panasonic.png"},
+            "pentax": {"id": "PENTAX", "path": "./logos/pentax.png"},
+            "ricoh": {"id": "RICOH", "path": "./logos/ricoh.png"},
+            "sony": {"id": "SONY", "path": "./logos/sony.png"},
+        },
+    },
+}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 class Config(object):
     """
     配置对象
     """
 
-    def __init__(self, path):
-        self._path = path
-        with open(self._path, 'r', encoding='utf-8') as f:
-            self._data = yaml.safe_load(f)
+    def __init__(self, data: dict | None = None):
+        base = copy.deepcopy(DEFAULT_CONFIG)
+        if data is None:
+            data = {}
+        self._data = _deep_merge(base, data)
         self._logos = {}
         self._left_top = ElementConfig(self._data['layout']['elements'][LOCATION_LEFT_TOP])
         self._left_bottom = ElementConfig(self._data['layout']['elements'][LOCATION_LEFT_BOTTOM])
@@ -99,17 +165,8 @@ class Config(object):
     def get_data(self) -> dict:
         return self._data
 
-    def get_input_dir(self):
-        return self._data['base']['input_dir']
-
-    def get_output_dir(self):
-        output_dir = self._data['base']['output_dir']
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        return output_dir
-
     def get_quality(self):
-        return self._data['base']['quality']
+        return self._data.get('base', {}).get('quality', 100)
 
     def get_alternative_font(self):
         return ImageFont.truetype(self._data['base']['alternative_font'], self.get_font_size())
@@ -151,8 +208,8 @@ class Config(object):
         return bold_font_size + font_size
 
     def save(self):
-        with open(self._path, 'w') as f:
-            yaml.dump(self._data, f, encoding='utf-8')
+        # 无状态模式：不在本地持久化
+        return None
 
     def enable_shadow(self):
         self._data['global']['shadow']['enable'] = True
@@ -215,8 +272,7 @@ class Config(object):
         return self._data['layout']['logo_enable']
 
     def is_logo_left(self):
-        if self._data['layout']['logo_position'] == 'left':
-            return True
+        return self._data['layout']['logo_position'] == 'left'
 
     def set_logo_left(self):
         self._data['layout']['logo_position'] = 'left'
@@ -245,14 +301,15 @@ class Config(object):
         else:
             return ''
 
-    def set_custom(self, location):
+    def set_custom(self, location, value: str):
         self._data['layout']['elements'][location]['name'] = 'Custom'
-        user_input = input('输入自定义字段的值（上次使用的值为：{}）\n'.format(self.get_custom_value(location)))
-        self._data['layout']['elements'][location]['value'] = user_input
+        self._data['layout']['elements'][location]['value'] = value
 
-    def set_element_name(self, location, name):
+    def set_element_name(self, location, name, value: str | None = None):
         if CUSTOM_VALUE == name:
-            self.set_custom(location)
+            if value is None:
+                value = ''
+            self.set_custom(location, value)
         else:
             self._data['layout']['elements'][location]['name'] = name
 

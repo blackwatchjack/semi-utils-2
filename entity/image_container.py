@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 import re
@@ -240,7 +242,7 @@ class ImageContainer(object):
         self.img.close()
         self.watermark_img.close()
 
-    def save(self, target_path, quality=100):
+    def save(self, target_path, quality=100, keep_exif=True, max_size: int | None = None):
         if self.orientation == "Rotate 0":
             pass
         elif self.orientation == "Rotate 90 CW":
@@ -255,7 +257,10 @@ class ImageContainer(object):
         if self.watermark_img.mode != 'RGB':
             self.watermark_img = self.watermark_img.convert('RGB')
 
-        if 'exif' in self.img.info:
+        if max_size and max_size > 0:
+            self.watermark_img.thumbnail((max_size, max_size), Image.LANCZOS)
+
+        if keep_exif and 'exif' in self.img.info:
             self.watermark_img.save(target_path, quality=quality, encoding='utf-8',
                                     exif=self.img.info['exif'] if 'exif' in self.img.info else '')
         else:
