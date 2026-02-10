@@ -131,8 +131,10 @@ class ImageContainer(object):
         if 'GPSPosition' in self.exif:
             self._param_dict[GEO_INFO_VALUE] = str.join(' ', extract_gps_info(self.exif.get('GPSPosition')))
         elif 'GPSLatitude' in self.exif and 'GPSLongitude' in self.exif:
-            self._param_dict[GEO_INFO_VALUE] = str.join(' ', extract_gps_lat_and_long((self.exif.get('GPSLatitude'),
-                                                                                       self.exif.get('GPSLongitude'))))
+            self._param_dict[GEO_INFO_VALUE] = str.join(
+                ' ',
+                extract_gps_lat_and_long(self.exif.get('GPSLatitude'), self.exif.get('GPSLongitude')),
+            )
         else:
             self._param_dict[GEO_INFO_VALUE] = '无'
 

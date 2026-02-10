@@ -9,6 +9,39 @@
 - 批量处理与可选输出目录
 - 预览模式（临时文件、可指定最大边与质量）
 
+**快速使用（GUI）**
+```bash
+./start_gui.sh
+```
+
+说明：
+- 在支持 Tk 的环境会启动桌面 GUI。
+- 若检测到 macOS + Tk 8.5 不兼容运行时，会自动切换到浏览器 GUI（`http://127.0.0.1:8765`）。
+
+**快速使用（Web GUI）**
+```bash
+./start_web_gui.sh
+```
+
+GUI 支持：
+- 批量选择图片与输出目录
+- 核心布局/质量/白边/阴影/Logo 参数
+- 文本元素选择与自定义文本
+- 预览模式（生成临时预览图并可点击打开）
+- 处理进度与错误日志
+
+Web GUI 支持：
+- 浏览器上传多张图片并处理
+- 任务化处理（提交任务、轮询进度、完成后下载 ZIP）
+- 下载处理结果 ZIP（含 `report.json` 与失败明细）
+- 支持预览模式 ZIP 下载
+
+Web API（供前端或外部调用）：
+- `POST /api/process`：提交任务（multipart/form-data）
+- `GET /api/jobs/<job_id>`：查询任务状态与进度
+- `GET /api/jobs/<job_id>/download`：下载 ZIP 结果（任务完成后）
+- `GET /health`：健康检查
+
 **快速使用（Python 调用）**
 ```python
 from engine import process_images

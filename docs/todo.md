@@ -1,6 +1,8 @@
 # Todo List
 
-1. 暂无（当前需求已完成）。
+1. 可选：增加更多配置项可视化（颜色/粗体/字体路径）以覆盖 `get_config_spec()` 全字段。
+1. 可选：恢复/重建可分发打包流程（如 PyInstaller/安装包）并在 CI 发布产物。
+1. 可选：为 Web GUI 增加任务取消与并发限流。
 
 ## 已确认
 
@@ -12,3 +14,7 @@
 1. 已支持预览模式（临时文件、`max_size/quality`、不保留 EXIF、调用方清理）。
 1. 已提供配置表单支持（`engine.get_config_spec()`）。
 1. 已增加启动时清理旧日志策略（异常退出场景，默认保留 1 天）。
+1. 已提供可直接运行的桌面 GUI 入口（`python gui_app.py`）。
+1. 已提供可直接运行的浏览器 GUI 入口（`python web_gui_app.py`）。
+1. 已提供 Web GUI 任务化进度查询与下载接口（`/api/jobs/<id>`）。
+1. 已提供 GUI 一键启动脚本（`start_gui.sh`、`start_web_gui.sh`）。
