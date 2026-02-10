@@ -41,6 +41,8 @@ from enums.constant import DATETIME_NAME
 from enums.constant import DATETIME_VALUE
 from enums.constant import FILENAME_NAME
 from enums.constant import FILENAME_VALUE
+from enums.constant import FOCUS_DISTANCE_NAME
+from enums.constant import FOCUS_DISTANCE_VALUE
 from enums.constant import GEO_INFO
 from enums.constant import GEO_INFO_VALUE
 from enums.constant import LENS_MAKE_LENS_MODEL_NAME
@@ -118,6 +120,7 @@ def get_config_spec() -> dict:
         {"value": DATE_FILENAME_VALUE, "label": DATE_FILENAME_NAME},
         {"value": DATETIME_FILENAME_VALUE, "label": DATETIME_FILENAME_NAME},
         {"value": GEO_INFO_VALUE, "label": GEO_INFO},
+        {"value": FOCUS_DISTANCE_VALUE, "label": FOCUS_DISTANCE_NAME},
     ]
 
     def element_fields(position: str, label: str) -> list[dict]:

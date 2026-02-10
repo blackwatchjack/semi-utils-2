@@ -108,6 +108,7 @@ engine.get_config_spec() -> dict
     "element_name": [
       {"value": "Model", "label": "相机型号(eg. Nikon Z7)"},
       {"value": "Param", "label": "拍摄参数(eg. 50mm f/1.8 1/1000s ISO 100)"},
+      {"value": "FocusDistance", "label": "对焦距离(eg. 1.25m)"},
       {"value": "Custom", "label": "自定义"}
       // ...
     ],

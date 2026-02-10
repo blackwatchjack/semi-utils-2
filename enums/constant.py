@@ -30,6 +30,8 @@ DATETIME_FILENAME_NAME = '日期时间 + 文件名(eg. 2023-01-01 12:00 DXO_0001
 DATETIME_FILENAME_VALUE = 'Datetime_Filename'
 GEO_INFO = '地理信息'
 GEO_INFO_VALUE = 'GeoInfo'
+FOCUS_DISTANCE_NAME = '对焦距离(eg. 1.25m)'
+FOCUS_DISTANCE_VALUE = 'FocusDistance'
 
 LOCATION_LEFT_TOP = 'left_top'
 LOCATION_LEFT_BOTTOM = 'left_bottom'

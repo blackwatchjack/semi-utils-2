@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from datetime import datetime
@@ -34,10 +35,99 @@ class ExifId(Enum):
     ISO = 'ISO'
     EXPOSURE_TIME = 'ExposureTime'
     SHUTTER_SPEED_VALUE = 'ShutterSpeedValue'
+    FOCUS_DISTANCE = 'FocusDistance'
+    SUBJECT_DISTANCE = 'SubjectDistance'
+    APPROXIMATE_FOCUS_DISTANCE = 'ApproximateFocusDistance'
+    HYPERFOCAL_DISTANCE = 'HyperfocalDistance'
     ORIENTATION = 'Orientation'
 
 
 PATTERN = re.compile(r"(\d+)\.")  # 匹配小数
+FOCUS_DISTANCE_PATTERN = re.compile(r"""^\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*([a-zA-Z"']*)\s*$""")
+FOCUS_DISTANCE_UNITS_TO_M = {
+    "m": 1,
+    "cm": 0.01,
+    "mm": 0.001,
+    "km": 1000,
+    "ft": 0.3048,
+    "in": 0.0254,
+}
+FOCUS_DISTANCE_UNIT_ALIASES = {
+    "": "m",
+    "m": "m",
+    "meter": "m",
+    "meters": "m",
+    "metre": "m",
+    "metres": "m",
+    "cm": "cm",
+    "centimeter": "cm",
+    "centimeters": "cm",
+    "centimetre": "cm",
+    "centimetres": "cm",
+    "mm": "mm",
+    "millimeter": "mm",
+    "millimeters": "mm",
+    "millimetre": "mm",
+    "millimetres": "mm",
+    "km": "km",
+    "kilometer": "km",
+    "kilometers": "km",
+    "kilometre": "km",
+    "kilometres": "km",
+    "ft": "ft",
+    "foot": "ft",
+    "feet": "ft",
+    "'": "ft",
+    "in": "in",
+    "inch": "in",
+    "inches": "in",
+    '"': "in",
+}
+
+
+def _normalize_focus_distance(raw_value: str) -> str:
+    value = str(raw_value).strip()
+    if not value:
+        return ''
+    if value.lower() in {'unknown', 'undefined', 'nan', 'inf', 'infinite', 'infinity'}:
+        return ''
+
+    matched = FOCUS_DISTANCE_PATTERN.match(value)
+    if not matched:
+        return ''
+
+    number_raw, unit_raw = matched.groups()
+    try:
+        number = float(number_raw)
+    except ValueError:
+        return ''
+    if not math.isfinite(number) or number < 0:
+        return ''
+
+    normalized_unit = FOCUS_DISTANCE_UNIT_ALIASES.get((unit_raw or '').strip().lower().rstrip('.'))
+    if normalized_unit is None:
+        return ''
+
+    meters = number * FOCUS_DISTANCE_UNITS_TO_M[normalized_unit]
+    if not math.isfinite(meters) or meters < 0:
+        return ''
+    return f"{meters:.2f}".rstrip('0').rstrip('.') + 'm'
+
+
+def get_focus_distance(exif: dict) -> str:
+    for key in (
+        ExifId.FOCUS_DISTANCE.value,
+        ExifId.SUBJECT_DISTANCE.value,
+        ExifId.APPROXIMATE_FOCUS_DISTANCE.value,
+        ExifId.HYPERFOCAL_DISTANCE.value,
+    ):
+        raw_value = extract_attribute(exif, key, default_value='')
+        if not raw_value:
+            continue
+        normalized = _normalize_focus_distance(raw_value)
+        if normalized:
+            return normalized
+    return ''
 
 
 def get_datetime(exif) -> datetime:
@@ -93,6 +183,7 @@ class ImageContainer(object):
         self.exposure_time: str = extract_attribute(self.exif, ExifId.EXPOSURE_TIME.value, default_value=DEFAULT_VALUE,
                                                     suffix='s')
         self.iso: str = extract_attribute(self.exif, ExifId.ISO.value, default_value=DEFAULT_VALUE)
+        self.focus_distance: str = get_focus_distance(self.exif)
 
         # 是否使用等效焦距
         self.use_equivalent_focal_length: bool = False
@@ -126,6 +217,7 @@ class ImageContainer(object):
         filename_without_ext = os.path.splitext(self.path.name)[0]
         self._param_dict[FILENAME_VALUE] = filename_without_ext
         self._param_dict[TOTAL_PIXEL_VALUE] = calculate_pixel_count(self.original_width, self.original_height)
+        self._param_dict[FOCUS_DISTANCE_VALUE] = self.focus_distance
 
         # GPS 信息
         if 'GPSPosition' in self.exif:
