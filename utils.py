@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+import os
 import platform
 import re
 import shutil
@@ -10,18 +13,58 @@ from PIL import ImageDraw
 from PIL import ImageOps
 
 from enums.constant import TRANSPARENT
+from runtime_paths import resolve_exiftool_env_path
+from runtime_paths import resolve_resource_path
 
-if platform.system() == 'Windows':
-    EXIFTOOL_PATH = Path('./exiftool/exiftool.exe')
-    ENCODING = 'gbk'
-elif shutil.which('exiftool') is not None:
-    EXIFTOOL_PATH = shutil.which('exiftool')
-    ENCODING = 'utf-8'
-else:
-    EXIFTOOL_PATH = Path('./exiftool/exiftool')
-    ENCODING = 'utf-8'
 
 logger = logging.getLogger(__name__)
+_EXIFTOOL_MISSING_WARNED = False
+
+
+def _exiftool_executable_name() -> str:
+    return "exiftool.exe" if platform.system() == "Windows" else "exiftool"
+
+
+def _as_exiftool_command(path: Path) -> list[str] | None:
+    if not path.exists():
+        return None
+    if platform.system() != "Windows" and not os.access(path, os.X_OK):
+        return ["perl", str(path)]
+    return [str(path)]
+
+
+def _resolve_exiftool_command() -> list[str] | None:
+    env_path = resolve_exiftool_env_path()
+    if env_path:
+        command = _as_exiftool_command(env_path)
+        if command:
+            return command
+
+    executable_name = _exiftool_executable_name()
+    candidates = [
+        resolve_resource_path(Path("exiftool") / executable_name),
+        Path.cwd() / "exiftool" / executable_name,
+    ]
+    for candidate in candidates:
+        command = _as_exiftool_command(candidate.resolve())
+        if command:
+            return command
+
+    exiftool_in_path = shutil.which("exiftool")
+    if exiftool_in_path:
+        return [exiftool_in_path]
+    return None
+
+
+def _warn_missing_exiftool_once() -> None:
+    global _EXIFTOOL_MISSING_WARNED
+    if _EXIFTOOL_MISSING_WARNED:
+        return
+    _EXIFTOOL_MISSING_WARNED = True
+    logger.warning(
+        "ExifTool is not available. Set SEMI_EXIFTOOL_PATH or bundle exiftool under ./exiftool. "
+        "Continuing without EXIF read/write."
+    )
 
 
 def get_file_list(path):
@@ -42,8 +85,13 @@ def get_exif(path) -> dict:
     :return: exif信息
     """
     exif_dict = {}
+    command = _resolve_exiftool_command()
+    if command is None:
+        _warn_missing_exiftool_once()
+        return exif_dict
+
     try:
-        output_bytes = subprocess.check_output([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
+        output_bytes = subprocess.check_output([*command, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
         output = output_bytes.decode('utf-8', errors='ignore')
 
         lines = output.splitlines()
@@ -78,9 +126,14 @@ def insert_exif(source_path, target_path) -> None:
     :param source_path: 源照片路径
     :param target_path: 目的照片路径
     """
+    command = _resolve_exiftool_command()
+    if command is None:
+        _warn_missing_exiftool_once()
+        return
+
     try:
         # 将 exif 信息转换为字节串
-        subprocess.check_output([EXIFTOOL_PATH, '-tagsfromfile', source_path, '-overwrite_original', target_path])
+        subprocess.check_output([*command, '-tagsfromfile', source_path, '-overwrite_original', target_path])
     except ValueError as e:
         logger.exception(f'ValueError: {source_path}: cannot insert exif {str(e)}')
 

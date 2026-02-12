@@ -10,6 +10,7 @@ from enums.constant import LOCATION_LEFT_BOTTOM
 from enums.constant import LOCATION_LEFT_TOP
 from enums.constant import LOCATION_RIGHT_BOTTOM
 from enums.constant import LOCATION_RIGHT_TOP
+from runtime_paths import resolve_resource_path
 
 
 class ElementConfig(object):
@@ -154,11 +155,11 @@ class Config(object):
             if m['id'] == '':
                 pass
             if m['id'].lower() in make.lower():
-                logo = Image.open(m['path'])
+                logo = Image.open(resolve_resource_path(m['path']))
                 self._logos[make] = logo
                 return logo
         logo_path = self._data['logo']['default']['path']
-        logo = Image.open(logo_path)
+        logo = Image.open(resolve_resource_path(logo_path))
         self._logos[make] = logo
         return logo
 
@@ -169,16 +170,19 @@ class Config(object):
         return self._data.get('base', {}).get('quality', 100)
 
     def get_alternative_font(self):
-        return ImageFont.truetype(self._data['base']['alternative_font'], self.get_font_size())
+        return ImageFont.truetype(resolve_resource_path(self._data['base']['alternative_font']), self.get_font_size())
 
     def get_alternative_bold_font(self):
-        return ImageFont.truetype(self._data['base']['alternative_bold_font'], self.get_bold_font_size())
+        return ImageFont.truetype(
+            resolve_resource_path(self._data['base']['alternative_bold_font']),
+            self.get_bold_font_size(),
+        )
 
     def get_font(self):
-        return ImageFont.truetype(self._data['base']['font'], self.get_font_size())
+        return ImageFont.truetype(resolve_resource_path(self._data['base']['font']), self.get_font_size())
 
     def get_bold_font(self):
-        return ImageFont.truetype(self._data['base']['bold_font'], self.get_bold_font_size())
+        return ImageFont.truetype(resolve_resource_path(self._data['base']['bold_font']), self.get_bold_font_size())
 
     def get_font_size(self):
         font_size = self._data['base']['font_size']

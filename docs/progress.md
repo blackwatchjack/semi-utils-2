@@ -18,3 +18,10 @@
 1. 修复 GPS 经纬度分支调用参数错误，避免特定 EXIF 下崩溃。
 1. 新增测试覆盖（核心 API、GPS、GUI 回退判定、Web API 端到端）。
 1. 已修复 CI 失效配置，改为跨平台测试流水线。
+1. 新增运行时资源路径解析（源码运行与 PyInstaller 运行统一处理）。
+1. ExifTool 解析逻辑升级为“环境变量 > 内置资源 > 系统 PATH”，缺失时降级并告警。
+1. 新增 macOS 一键打包脚本（`scripts/macos/build_app.sh`）与 ExifTool 固定下载校验脚本（`scripts/macos/fetch_exiftool.sh`）。
+1. 新增 macOS 打包文档 `docs/macos_app.md`，明确产物路径与验收流程。
+1. 桌面 GUI 参数与状态文案已中文化，提升可用性。
+1. Tk 不兼容场景回退升级为“app 内嵌 WebView 优先，浏览器兜底”。
+1. 修复内嵌 WebView 下任务提交后跳 JSON 页的问题（前端脚本降级为兼容模式）。

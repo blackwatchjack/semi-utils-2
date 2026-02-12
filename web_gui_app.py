@@ -121,8 +121,13 @@ def _build_options(options: list[dict[str, Any]], selected: Any) -> str:
     for item in options:
         value = str(item["value"])
         selected_attr = " selected" if value == selected_text else ""
+        label = str(item.get("label", value))
+        if value == "left" and label == "left":
+            label = "左侧"
+        elif value == "right" and label == "right":
+            label = "右侧"
         rows.append(
-            f'<option value="{escape(value)}"{selected_attr}>{escape(str(item["label"]))}</option>'
+            f'<option value="{escape(value)}"{selected_attr}>{escape(label)}</option>'
         )
     return "".join(rows)
 
@@ -529,7 +534,7 @@ def _build_html() -> bytes:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>semi-utils Web GUI</title>
+  <title>semi-utils 网页界面</title>
   <style>
     :root {{
       --bg: #edf1f7;
@@ -655,7 +660,7 @@ def _build_html() -> bytes:
 <body>
   <div class="container">
     <div class="header">
-      <h1 class="title">semi-utils Web GUI</h1>
+      <h1 class="title">semi-utils 网页界面</h1>
       <div class="subtitle">上传图片后后台处理，可轮询进度并下载 ZIP 结果。</div>
     </div>
 
@@ -667,135 +672,135 @@ def _build_html() -> bytes:
         </div>
 
         <div>
-          <label>Layout</label>
+          <label>布局</label>
           <select name="layout">{layout_options}</select>
         </div>
         <div>
-          <label>Quality (1-100)</label>
+          <label>画质 (1-100)</label>
           <input type="number" name="quality" min="1" max="100" value="{DEFAULTS["base"]["quality"]}" />
         </div>
 
         <div>
-          <label>Background Color</label>
+          <label>背景颜色</label>
           <input type="color" name="background_color" value="{escape(DEFAULTS["layout"]["background_color"])}" />
         </div>
         <div>
-          <label>Logo Position</label>
+          <label>徽标位置</label>
           <select id="logoPositionInput" name="logo_position">{logo_position_options}</select>
         </div>
 
         <div class="full inline">
-          <label><input type="checkbox" name="shadow"{_checked_attr(DEFAULTS["global"]["shadow"]["enable"])} /> Shadow</label>
-          <label><input id="whiteMarginCheck" type="checkbox" name="white_margin"{_checked_attr(DEFAULTS["global"]["white_margin"]["enable"])} /> White Margin</label>
-          <label><input type="checkbox" name="padding_ratio"{_checked_attr(DEFAULTS["global"]["padding_with_original_ratio"]["enable"])} /> Padding With Original Ratio</label>
-          <label><input type="checkbox" name="equivalent_focal_length"{_checked_attr(DEFAULTS["global"]["focal_length"]["use_equivalent_focal_length"])} /> Use Equivalent Focal Length</label>
-          <label><input id="logoEnableCheck" type="checkbox" name="logo_enable"{_checked_attr(DEFAULTS["layout"]["logo_enable"])} /> Logo Enable</label>
+          <label><input type="checkbox" name="shadow"{_checked_attr(DEFAULTS["global"]["shadow"]["enable"])} /> 阴影</label>
+          <label><input id="whiteMarginCheck" type="checkbox" name="white_margin"{_checked_attr(DEFAULTS["global"]["white_margin"]["enable"])} /> 白边</label>
+          <label><input type="checkbox" name="padding_ratio"{_checked_attr(DEFAULTS["global"]["padding_with_original_ratio"]["enable"])} /> 按原图比例填充</label>
+          <label><input type="checkbox" name="equivalent_focal_length"{_checked_attr(DEFAULTS["global"]["focal_length"]["use_equivalent_focal_length"])} /> 使用等效焦距</label>
+          <label><input id="logoEnableCheck" type="checkbox" name="logo_enable"{_checked_attr(DEFAULTS["layout"]["logo_enable"])} /> 启用徽标</label>
         </div>
 
         <div>
-          <label>White Margin Width (%)</label>
+          <label>白边宽度 (%)</label>
           <input id="whiteMarginWidthInput" type="number" name="white_margin_width" min="0" max="30" value="{DEFAULTS["global"]["white_margin"]["width"]}" />
         </div>
 
         <div class="full inline">
-          <label><input id="previewCheck" type="checkbox" name="preview" /> Preview Mode</label>
+          <label><input id="previewCheck" type="checkbox" name="preview" /> 预览模式</label>
         </div>
         <div>
-          <label>Preview Max Size</label>
+          <label>预览最大边长</label>
           <input id="previewMaxSizeInput" type="number" name="preview_max_size" min="200" max="8000" value="1600" />
         </div>
         <div>
-          <label>Preview Quality</label>
+          <label>预览质量</label>
           <input id="previewQualityInput" type="number" name="preview_quality" min="1" max="100" value="80" />
         </div>
 
         <div>
-          <label>Left Top Element</label>
+          <label>左上元素</label>
           <select id="element_left_top_name" name="element_left_top_name">{element_options_by_position["left_top"]}</select>
         </div>
         <div>
-          <label>Left Top Custom Value</label>
+          <label>左上自定义内容</label>
           <input id="element_left_top_value" type="text" name="element_left_top_value" value="{escape(DEFAULTS["layout"]["elements"]["left_top"].get("value", ""))}" />
         </div>
         <div>
-          <label>Left Top Color</label>
+          <label>左上颜色</label>
           <input type="color" name="element_left_top_color" value="{escape(DEFAULTS["layout"]["elements"]["left_top"].get("color", "#212121"))}" />
         </div>
         <div>
-          <label><input type="checkbox" name="element_left_top_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["left_top"].get("is_bold", False))} /> Left Top Bold</label>
+          <label><input type="checkbox" name="element_left_top_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["left_top"].get("is_bold", False))} /> 左上加粗</label>
         </div>
 
         <div>
-          <label>Left Bottom Element</label>
+          <label>左下元素</label>
           <select id="element_left_bottom_name" name="element_left_bottom_name">{element_options_by_position["left_bottom"]}</select>
         </div>
         <div>
-          <label>Left Bottom Custom Value</label>
+          <label>左下自定义内容</label>
           <input id="element_left_bottom_value" type="text" name="element_left_bottom_value" value="{escape(DEFAULTS["layout"]["elements"]["left_bottom"].get("value", ""))}" />
         </div>
         <div>
-          <label>Left Bottom Color</label>
+          <label>左下颜色</label>
           <input type="color" name="element_left_bottom_color" value="{escape(DEFAULTS["layout"]["elements"]["left_bottom"].get("color", "#212121"))}" />
         </div>
         <div>
-          <label><input type="checkbox" name="element_left_bottom_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["left_bottom"].get("is_bold", False))} /> Left Bottom Bold</label>
+          <label><input type="checkbox" name="element_left_bottom_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["left_bottom"].get("is_bold", False))} /> 左下加粗</label>
         </div>
 
         <div>
-          <label>Right Top Element</label>
+          <label>右上元素</label>
           <select id="element_right_top_name" name="element_right_top_name">{element_options_by_position["right_top"]}</select>
         </div>
         <div>
-          <label>Right Top Custom Value</label>
+          <label>右上自定义内容</label>
           <input id="element_right_top_value" type="text" name="element_right_top_value" value="{escape(DEFAULTS["layout"]["elements"]["right_top"].get("value", ""))}" />
         </div>
         <div>
-          <label>Right Top Color</label>
+          <label>右上颜色</label>
           <input type="color" name="element_right_top_color" value="{escape(DEFAULTS["layout"]["elements"]["right_top"].get("color", "#212121"))}" />
         </div>
         <div>
-          <label><input type="checkbox" name="element_right_top_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["right_top"].get("is_bold", False))} /> Right Top Bold</label>
+          <label><input type="checkbox" name="element_right_top_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["right_top"].get("is_bold", False))} /> 右上加粗</label>
         </div>
 
         <div>
-          <label>Right Bottom Element</label>
+          <label>右下元素</label>
           <select id="element_right_bottom_name" name="element_right_bottom_name">{element_options_by_position["right_bottom"]}</select>
         </div>
         <div>
-          <label>Right Bottom Custom Value</label>
+          <label>右下自定义内容</label>
           <input id="element_right_bottom_value" type="text" name="element_right_bottom_value" value="{escape(DEFAULTS["layout"]["elements"]["right_bottom"].get("value", ""))}" />
         </div>
         <div>
-          <label>Right Bottom Color</label>
+          <label>右下颜色</label>
           <input type="color" name="element_right_bottom_color" value="{escape(DEFAULTS["layout"]["elements"]["right_bottom"].get("color", "#212121"))}" />
         </div>
         <div>
-          <label><input type="checkbox" name="element_right_bottom_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["right_bottom"].get("is_bold", False))} /> Right Bottom Bold</label>
+          <label><input type="checkbox" name="element_right_bottom_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["right_bottom"].get("is_bold", False))} /> 右下加粗</label>
         </div>
 
         <div>
-          <label>Font Size Level</label>
+          <label>字体大小级别</label>
           <select name="font_size">{font_size_options}</select>
         </div>
         <div>
-          <label>Bold Font Size Level</label>
+          <label>加粗字体大小级别</label>
           <select name="bold_font_size">{bold_font_size_options}</select>
         </div>
 
         <div class="full">
-          <label>Font Path</label>
+          <label>字体路径</label>
           <input type="text" name="font" value="{escape(DEFAULTS["base"]["font"])}" />
         </div>
         <div class="full">
-          <label>Bold Font Path</label>
+          <label>加粗字体路径</label>
           <input type="text" name="bold_font" value="{escape(DEFAULTS["base"]["bold_font"])}" />
         </div>
         <div class="full">
-          <label>Alternative Font Path</label>
+          <label>备用字体路径</label>
           <input type="text" name="alternative_font" value="{escape(DEFAULTS["base"]["alternative_font"])}" />
         </div>
         <div class="full">
-          <label>Alternative Bold Font Path</label>
+          <label>备用加粗字体路径</label>
           <input type="text" name="alternative_bold_font" value="{escape(DEFAULTS["base"]["alternative_bold_font"])}" />
         </div>
       </div>
@@ -816,26 +821,26 @@ def _build_html() -> bytes:
   </div>
 
   <script>
-    const form = document.getElementById("processForm");
-    const submitBtn = document.getElementById("submitBtn");
-    const cancelBtn = document.getElementById("cancelBtn");
-    const statusEl = document.getElementById("status");
-    const resultPanel = document.getElementById("resultPanel");
-    const resultSummary = document.getElementById("resultSummary");
-    const errorList = document.getElementById("errorList");
-    const downloadLink = document.getElementById("downloadLink");
+    var form = document.getElementById("processForm");
+    var submitBtn = document.getElementById("submitBtn");
+    var cancelBtn = document.getElementById("cancelBtn");
+    var statusEl = document.getElementById("status");
+    var resultPanel = document.getElementById("resultPanel");
+    var resultSummary = document.getElementById("resultSummary");
+    var errorList = document.getElementById("errorList");
+    var downloadLink = document.getElementById("downloadLink");
 
-    let pollTimer = null;
-    let currentJobId = null;
-    const customValueKey = {json.dumps(CUSTOM_VALUE)};
+    var pollTimer = null;
+    var currentJobId = null;
+    var customValueKey = {json.dumps(CUSTOM_VALUE)};
 
-    const previewCheck = document.getElementById("previewCheck");
-    const previewMaxSizeInput = document.getElementById("previewMaxSizeInput");
-    const previewQualityInput = document.getElementById("previewQualityInput");
-    const logoEnableCheck = document.getElementById("logoEnableCheck");
-    const logoPositionInput = document.getElementById("logoPositionInput");
-    const whiteMarginCheck = document.getElementById("whiteMarginCheck");
-    const whiteMarginWidthInput = document.getElementById("whiteMarginWidthInput");
+    var previewCheck = document.getElementById("previewCheck");
+    var previewMaxSizeInput = document.getElementById("previewMaxSizeInput");
+    var previewQualityInput = document.getElementById("previewQualityInput");
+    var logoEnableCheck = document.getElementById("logoEnableCheck");
+    var logoPositionInput = document.getElementById("logoPositionInput");
+    var whiteMarginCheck = document.getElementById("whiteMarginCheck");
+    var whiteMarginWidthInput = document.getElementById("whiteMarginWidthInput");
 
     function updateDependentInputs() {{
       logoPositionInput.disabled = !logoEnableCheck.checked;
@@ -845,26 +850,50 @@ def _build_html() -> bytes:
     }}
 
     function updateCustomValueInput(position) {{
-      const select = document.getElementById(`element_${{position}}_name`);
-      const input = document.getElementById(`element_${{position}}_value`);
+      var select = document.getElementById("element_" + position + "_name");
+      var input = document.getElementById("element_" + position + "_value");
       if (!select || !input) {{
         return;
       }}
       input.disabled = select.value !== customValueKey;
     }}
 
-    ["left_top", "left_bottom", "right_top", "right_bottom"].forEach((position) => {{
-      const select = document.getElementById(`element_${{position}}_name`);
-      if (select) {{
-        select.addEventListener("change", () => updateCustomValueInput(position));
+    function getErrorMessage(payload, statusCode) {{
+      if (payload && payload.error && payload.error.message) {{
+        return payload.error.message;
       }}
-      updateCustomValueInput(position);
-    }});
+      return "HTTP " + statusCode;
+    }}
 
-    previewCheck.addEventListener("change", updateDependentInputs);
-    logoEnableCheck.addEventListener("change", updateDependentInputs);
-    whiteMarginCheck.addEventListener("change", updateDependentInputs);
-    updateDependentInputs();
+    function requestJson(method, url, body, onSuccess, onError) {{
+      if (typeof XMLHttpRequest === "undefined") {{
+        onError("当前环境不支持网络请求能力");
+        return;
+      }}
+      var xhr = new XMLHttpRequest();
+      xhr.open(method, url, true);
+      xhr.onreadystatechange = function() {{
+        if (xhr.readyState !== 4) {{
+          return;
+        }}
+        var payload = null;
+        try {{
+          payload = JSON.parse(xhr.responseText);
+        }} catch (parseErr) {{
+          onError("响应解析失败");
+          return;
+        }}
+        if (xhr.status >= 200 && xhr.status < 300 && payload && payload.ok) {{
+          onSuccess(payload);
+          return;
+        }}
+        onError(getErrorMessage(payload, xhr.status));
+      }};
+      xhr.onerror = function() {{
+        onError("网络请求失败");
+      }};
+      xhr.send(body || null);
+    }}
 
     function setRunningState(running) {{
       submitBtn.disabled = running;
@@ -881,8 +910,10 @@ def _build_html() -> bytes:
     }}
 
     function renderJob(job) {{
-      const percent = job.progress.percent;
-      statusEl.textContent = `状态: ${{job.status}} | 进度: ${{job.progress.current}}/${{job.progress.total}} (${{percent}}%)\n${{job.message || ""}}`;
+      var percent = job.progress.percent;
+      var msg = job.message || "";
+      statusEl.textContent =
+        "状态: " + job.status + " | 进度: " + job.progress.current + "/" + job.progress.total + " (" + percent + "%)\\n" + msg;
 
       if (job.status === "done" || job.status === "error" || job.status === "cancelled") {{
         setRunningState(false);
@@ -894,81 +925,129 @@ def _build_html() -> bytes:
 
         resultPanel.style.display = "block";
         if (job.status === "done") {{
-          resultSummary.innerHTML = `<span class="ok">处理完成：</span>输出 ${{job.output_count}} 张，失败 ${{job.error_count}} 张。`;
-          downloadLink.href = `/api/jobs/${{job.job_id}}/download`;
+          resultSummary.innerHTML = '<span class="ok">处理完成：</span>输出 ' + job.output_count + " 张，失败 " + job.error_count + " 张。";
+          downloadLink.href = "/api/jobs/" + job.job_id + "/download";
           downloadLink.style.display = "inline-block";
         }} else if (job.status === "cancelled") {{
-          resultSummary.innerHTML = `<span class="err">任务已取消：</span>已处理 ${{job.output_count}} 张。`;
+          resultSummary.innerHTML = '<span class="err">任务已取消：</span>已处理 ' + job.output_count + " 张。";
         }} else {{
-          resultSummary.innerHTML = `<span class="err">处理失败：</span>${{job.message}}`;
+          resultSummary.innerHTML = '<span class="err">处理失败：</span>' + (job.message || "");
         }}
 
         if (job.errors && job.errors.length > 0) {{
-          errorList.innerHTML = "失败明细:\n" + job.errors.map(e => `- ${{e.source}} => ${{e.error}}`).join("\n");
+          var lines = [];
+          for (var i = 0; i < job.errors.length; i += 1) {{
+            var e = job.errors[i];
+            lines.push("- " + e.source + " => " + e.error);
+          }}
+          errorList.textContent = "失败明细:\\n" + lines.join("\\n");
         }} else {{
           errorList.textContent = "";
         }}
       }}
     }}
 
-    async function pollJob(jobId) {{
-      try {{
-        const resp = await fetch(`/api/jobs/${{jobId}}`);
-        const payload = await resp.json();
-        if (!resp.ok || !payload.ok) {{
-          throw new Error(payload.error?.message || `HTTP ${{resp.status}}`);
+    function pollJob(jobId) {{
+      requestJson(
+        "GET",
+        "/api/jobs/" + jobId,
+        null,
+        function(payload) {{
+          renderJob(payload.job);
+        }},
+        function(message) {{
+          statusEl.textContent = "查询任务状态失败: " + message;
         }}
-        renderJob(payload.job);
-      }} catch (err) {{
-        statusEl.textContent = `查询任务状态失败: ${{err.message}}`;
-      }}
+      );
     }}
 
-    form.addEventListener("submit", async (event) => {{
-      event.preventDefault();
+    function onSubmit(event) {{
+      if (event && event.preventDefault) {{
+        event.preventDefault();
+      }}
+      if (typeof FormData === "undefined") {{
+        statusEl.textContent = "当前环境不支持 FormData，无法在内嵌模式提交任务。";
+        return false;
+      }}
       setRunningState(true);
       resetResult();
       statusEl.textContent = "任务提交中...";
 
-      try {{
-        const resp = await fetch("/api/process", {{
-          method: "POST",
-          body: new FormData(form),
-        }});
-        const payload = await resp.json();
-        if (!resp.ok || !payload.ok) {{
-          throw new Error(payload.error?.message || `HTTP ${{resp.status}}`);
+      requestJson(
+        "POST",
+        "/api/process",
+        new FormData(form),
+        function(payload) {{
+          var jobId = payload.job_id;
+          currentJobId = jobId;
+          statusEl.textContent = "任务已创建: " + jobId + "，开始轮询进度...";
+          pollJob(jobId);
+          pollTimer = setInterval(function() {{
+            pollJob(jobId);
+          }}, 800);
+        }},
+        function(message) {{
+          setRunningState(false);
+          currentJobId = null;
+          statusEl.textContent = "提交失败: " + message;
         }}
+      );
+      return false;
+    }}
 
-        const jobId = payload.job_id;
-        currentJobId = jobId;
-        statusEl.textContent = `任务已创建: ${{jobId}}，开始轮询进度...`;
-        await pollJob(jobId);
-        pollTimer = setInterval(() => pollJob(jobId), 800);
-      }} catch (err) {{
-        setRunningState(false);
-        currentJobId = null;
-        statusEl.textContent = `提交失败: ${{err.message}}`;
-      }}
-    }});
-
-    cancelBtn.addEventListener("click", async () => {{
+    function onCancelClick() {{
       if (!currentJobId) {{
         return;
       }}
       cancelBtn.disabled = true;
-      try {{
-        const resp = await fetch(`/api/jobs/${{currentJobId}}/cancel`, {{ method: "POST" }});
-        const payload = await resp.json();
-        if (!resp.ok || !payload.ok) {{
-          throw new Error(payload.error?.message || `HTTP ${{resp.status}}`);
+      requestJson(
+        "POST",
+        "/api/jobs/" + currentJobId + "/cancel",
+        null,
+        function(payload) {{
+          renderJob(payload.job);
+        }},
+        function(message) {{
+          cancelBtn.disabled = false;
+          statusEl.textContent = "取消失败: " + message;
         }}
-        renderJob(payload.job);
-      }} catch (err) {{
-        cancelBtn.disabled = false;
-        statusEl.textContent = `取消失败: ${{err.message}}`;
-      }}
-    }});
+      );
+    }}
+
+    var positions = ["left_top", "left_bottom", "right_top", "right_bottom"];
+    for (var idx = 0; idx < positions.length; idx += 1) {{
+      (function(position) {{
+        var select = document.getElementById("element_" + position + "_name");
+        if (select && select.addEventListener) {{
+          select.addEventListener("change", function() {{
+            updateCustomValueInput(position);
+          }});
+        }}
+        updateCustomValueInput(position);
+      }})(positions[idx]);
+    }}
+
+    if (previewCheck && previewCheck.addEventListener) {{
+      previewCheck.addEventListener("change", updateDependentInputs);
+    }}
+    if (logoEnableCheck && logoEnableCheck.addEventListener) {{
+      logoEnableCheck.addEventListener("change", updateDependentInputs);
+    }}
+    if (whiteMarginCheck && whiteMarginCheck.addEventListener) {{
+      whiteMarginCheck.addEventListener("change", updateDependentInputs);
+    }}
+    updateDependentInputs();
+
+    if (form && form.addEventListener) {{
+      form.addEventListener("submit", onSubmit);
+    }} else if (form) {{
+      form.onsubmit = onSubmit;
+    }}
+    if (cancelBtn && cancelBtn.addEventListener) {{
+      cancelBtn.addEventListener("click", onCancelClick);
+    }} else if (cancelBtn) {{
+      cancelBtn.onclick = onCancelClick;
+    }}
   </script>
 </body>
 </html>
@@ -1217,17 +1296,7 @@ class SemiWebHandler(BaseHTTPRequestHandler):
 
 
 def run_server(host: str, port: int, open_browser: bool) -> None:
-    os.chdir(Path(__file__).resolve().parent)
-    _ensure_cleanup_thread()
-    log_path = setup_temp_logging(name_prefix="semi-utils-web")
-
-    selected_port = _pick_available_port(host, port)
-    if selected_port != port:
-        print(f"Requested port {port} is occupied. Switched to {selected_port}.")
-
-    server = ThreadingHTTPServer((host, selected_port), SemiWebHandler)
-    real_port = int(server.server_address[1])
-    url = f"http://{host}:{real_port}/"
+    server, url, log_path = start_server_background(host, port)
 
     print(f"Web GUI listening at {url}")
     print(f"Runtime log file: {log_path}")
@@ -1240,6 +1309,21 @@ def run_server(host: str, port: int, open_browser: bool) -> None:
         pass
     finally:
         server.server_close()
+
+
+def start_server_background(host: str, port: int) -> tuple[ThreadingHTTPServer, str, Path]:
+    os.chdir(Path(__file__).resolve().parent)
+    _ensure_cleanup_thread()
+    log_path = setup_temp_logging(name_prefix="semi-utils-web", cleanup_on_exit=False)
+
+    selected_port = _pick_available_port(host, port)
+    if selected_port != port:
+        print(f"Requested port {port} is occupied. Switched to {selected_port}.")
+
+    server = ThreadingHTTPServer((host, selected_port), SemiWebHandler)
+    real_port = int(server.server_address[1])
+    url = f"http://{host}:{real_port}/"
+    return server, url, log_path
 
 
 def main() -> None:

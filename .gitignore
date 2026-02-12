@@ -11,3 +11,5 @@ exiftool
 build
 dist
 logs
+third_party/exiftool
+semi-utils.spec

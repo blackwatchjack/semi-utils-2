@@ -24,10 +24,51 @@ def should_fallback_to_web(system: str, mac_major: int, tk_version: float) -> bo
     return system == "Darwin" and mac_major >= 15 and tk_version < 8.6
 
 
+def run_safe_web_fallback(host: str = "127.0.0.1", port: int = 8765) -> None:
+    from web_gui_app import run_server
+    from web_gui_app import start_server_background
+
+    try:
+        import webview  # type: ignore
+    except Exception:
+        run_server(host, port, open_browser=True)
+        return
+
+    server = None
+    server_thread: threading.Thread | None = None
+    try:
+        server, url, log_path = start_server_background(host, port)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        print(f"Web GUI embedded at {url}")
+        print(f"Runtime log file: {log_path}")
+
+        webview.create_window("semi-utils 网页界面", url, width=1200, height=820, min_size=(1000, 700))
+        webview.start(gui="cocoa")
+    except Exception as exc:
+        print(f"Embedded webview unavailable, fallback to browser mode: {exc}")
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        run_server(host, port, open_browser=True)
+    finally:
+        if server is not None:
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            try:
+                server.server_close()
+            except Exception:
+                pass
+        if server_thread is not None and server_thread.is_alive():
+            server_thread.join(timeout=1.0)
+
+
 class SemiUtilsGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("semi-utils GUI")
+        self.root.title("semi-utils 图形界面")
         self.root.geometry("1200x820")
         self.root.minsize(1000, 700)
 
@@ -37,6 +78,30 @@ class SemiUtilsGuiApp:
         self.element_options = self.spec["enums"]["element_name"]
         self.logo_position_options = self.spec["enums"]["logo_position"]
         self.font_size_options = self.spec["enums"]["font_size_level"]
+        self.layout_value_to_label = {
+            str(item["value"]): self._display_label("layout_type", item)
+            for item in self.layout_options
+        }
+        self.layout_label_to_value = {label: value for value, label in self.layout_value_to_label.items()}
+        self.layout_labels = [self.layout_value_to_label[str(item["value"])] for item in self.layout_options]
+
+        self.element_value_to_label = {
+            str(item["value"]): self._display_label("element_name", item)
+            for item in self.element_options
+        }
+        self.element_label_to_value = {label: value for value, label in self.element_value_to_label.items()}
+        self.element_labels = [self.element_value_to_label[str(item["value"])] for item in self.element_options]
+
+        self.logo_position_value_to_label = {
+            str(item["value"]): self._display_label("logo_position", item)
+            for item in self.logo_position_options
+        }
+        self.logo_position_label_to_value = {
+            label: value for value, label in self.logo_position_value_to_label.items()
+        }
+        self.logo_position_labels = [
+            self.logo_position_value_to_label[str(item["value"])] for item in self.logo_position_options
+        ]
 
         self.input_paths: list[Path] = []
         self.preview_paths: list[Path] = []
@@ -48,11 +113,22 @@ class SemiUtilsGuiApp:
         self._refresh_control_state()
         self.root.after(100, self._drain_events)
 
+    @staticmethod
+    def _display_label(option_type: str, item: dict[str, Any]) -> str:
+        value = str(item["value"])
+        label = str(item.get("label", value))
+        if option_type == "logo_position":
+            if value == "left":
+                return "左侧"
+            if value == "right":
+                return "右侧"
+        return label
+
     def _build_variables(self) -> None:
         layout_default = self.defaults["layout"]["type"]
         logo_position_default = self.defaults["layout"]["logo_position"]
 
-        self.layout_var = tk.StringVar(value=layout_default)
+        self.layout_var = tk.StringVar(value=self.layout_value_to_label.get(layout_default, layout_default))
         self.output_dir_var = tk.StringVar(value="")
         self.quality_var = tk.IntVar(value=self.defaults["base"]["quality"])
         self.font_size_var = tk.IntVar(value=self.defaults["base"]["font_size"])
@@ -70,7 +146,9 @@ class SemiUtilsGuiApp:
             value=self.defaults["global"]["focal_length"]["use_equivalent_focal_length"]
         )
         self.logo_enable_var = tk.BooleanVar(value=self.defaults["layout"]["logo_enable"])
-        self.logo_position_var = tk.StringVar(value=logo_position_default)
+        self.logo_position_var = tk.StringVar(
+            value=self.logo_position_value_to_label.get(logo_position_default, logo_position_default)
+        )
 
         self.preview_var = tk.BooleanVar(value=False)
         self.preview_max_size_var = tk.IntVar(value=1600)
@@ -82,13 +160,16 @@ class SemiUtilsGuiApp:
         self.element_bold_vars: dict[str, tk.BooleanVar] = {}
         for position in ("left_top", "left_bottom", "right_top", "right_bottom"):
             element = self.defaults["layout"]["elements"][position]
-            self.element_name_vars[position] = tk.StringVar(value=element["name"])
+            default_name = element["name"]
+            self.element_name_vars[position] = tk.StringVar(
+                value=self.element_value_to_label.get(default_name, default_name)
+            )
             self.element_value_vars[position] = tk.StringVar(value=element.get("value", ""))
             self.element_color_vars[position] = tk.StringVar(value=element.get("color", "#212121"))
             self.element_bold_vars[position] = tk.BooleanVar(value=element.get("is_bold", False))
 
         self.progress_value_var = tk.DoubleVar(value=0)
-        self.status_var = tk.StringVar(value="Ready")
+        self.status_var = tk.StringVar(value="就绪")
 
     def _build_ui(self) -> None:
         container = ttk.Frame(self.root, padding=10)
@@ -101,19 +182,19 @@ class SemiUtilsGuiApp:
         self._build_log_panel(container)
 
     def _build_input_panel(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Input")
+        frame = ttk.LabelFrame(parent, text="输入")
         frame.pack(fill=tk.BOTH, expand=False, padx=4, pady=4)
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill=tk.X, padx=8, pady=8)
 
-        ttk.Button(buttons, text="Add Files", command=self._add_files).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="Remove Selected", command=self._remove_selected_input).pack(side=tk.LEFT, padx=6)
-        ttk.Button(buttons, text="Clear", command=self._clear_inputs).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="添加图片", command=self._add_files).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="移除选中", command=self._remove_selected_input).pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="清空", command=self._clear_inputs).pack(side=tk.LEFT)
 
-        ttk.Label(buttons, text="Output Dir").pack(side=tk.LEFT, padx=(16, 6))
+        ttk.Label(buttons, text="输出目录").pack(side=tk.LEFT, padx=(16, 6))
         ttk.Entry(buttons, textvariable=self.output_dir_var, width=60).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(buttons, text="Browse", command=self._select_output_dir).pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="浏览", command=self._select_output_dir).pack(side=tk.LEFT, padx=6)
 
         list_frame = ttk.Frame(frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
@@ -131,7 +212,7 @@ class SemiUtilsGuiApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_config_panel(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Config")
+        frame = ttk.LabelFrame(parent, text="参数配置")
         frame.pack(fill=tk.BOTH, expand=False, padx=4, pady=4)
 
         grid = ttk.Frame(frame)
@@ -139,21 +220,21 @@ class SemiUtilsGuiApp:
         for col in range(4):
             grid.columnconfigure(col, weight=1)
 
-        ttk.Label(grid, text="Layout").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(grid, text="布局").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
         self.layout_combo = ttk.Combobox(
             grid,
             width=28,
             state="readonly",
-            values=[item["value"] for item in self.layout_options],
+            values=self.layout_labels,
             textvariable=self.layout_var,
         )
         self.layout_combo.grid(row=0, column=1, sticky=tk.EW, padx=4, pady=4)
 
-        ttk.Label(grid, text="Quality").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(grid, text="画质").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
         self.quality_spin = ttk.Spinbox(grid, from_=1, to=100, width=8, textvariable=self.quality_var)
         self.quality_spin.grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(grid, text="Background Color").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(grid, text="背景颜色").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Entry(grid, textvariable=self.background_color_var, width=20).grid(
             row=1,
             column=1,
@@ -162,28 +243,28 @@ class SemiUtilsGuiApp:
             pady=4,
         )
 
-        ttk.Label(grid, text="Logo Position").grid(row=1, column=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(grid, text="徽标位置").grid(row=1, column=2, sticky=tk.W, padx=4, pady=4)
         self.logo_position_combo = ttk.Combobox(
             grid,
             width=12,
             state="readonly",
-            values=[item["value"] for item in self.logo_position_options],
+            values=self.logo_position_labels,
             textvariable=self.logo_position_var,
         )
         self.logo_position_combo.grid(row=1, column=3, sticky=tk.W, padx=4, pady=4)
 
-        self.shadow_check = ttk.Checkbutton(grid, text="Shadow", variable=self.shadow_var)
+        self.shadow_check = ttk.Checkbutton(grid, text="阴影", variable=self.shadow_var)
         self.shadow_check.grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
 
         self.white_margin_check = ttk.Checkbutton(
             grid,
-            text="White Margin",
+            text="白边",
             variable=self.white_margin_var,
             command=self._refresh_control_state,
         )
         self.white_margin_check.grid(row=2, column=1, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(grid, text="White Margin Width (%)").grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(grid, text="白边宽度(%)").grid(row=2, column=2, sticky=tk.W, padx=4, pady=4)
         self.white_margin_spin = ttk.Spinbox(
             grid,
             from_=0,
@@ -195,7 +276,7 @@ class SemiUtilsGuiApp:
 
         self.logo_enable_check = ttk.Checkbutton(
             grid,
-            text="Logo Enabled",
+            text="启用徽标",
             variable=self.logo_enable_var,
             command=self._refresh_control_state,
         )
@@ -203,36 +284,36 @@ class SemiUtilsGuiApp:
 
         self.padding_ratio_check = ttk.Checkbutton(
             grid,
-            text="Padding With Original Ratio",
+            text="按原图比例填充",
             variable=self.padding_ratio_var,
         )
         self.padding_ratio_check.grid(row=3, column=1, sticky=tk.W, padx=4, pady=4)
 
         self.eq_focal_check = ttk.Checkbutton(
             grid,
-            text="Use Equivalent Focal Length",
+            text="使用等效焦距",
             variable=self.equivalent_focal_length_var,
         )
         self.eq_focal_check.grid(row=3, column=2, sticky=tk.W, padx=4, pady=4)
 
-        text_frame = ttk.LabelFrame(frame, text="Text Elements")
+        text_frame = ttk.LabelFrame(frame, text="文字元素")
         text_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
 
         for col in range(5):
             text_frame.columnconfigure(col, weight=1)
 
         positions = [
-            ("left_top", "Left Top"),
-            ("left_bottom", "Left Bottom"),
-            ("right_top", "Right Top"),
-            ("right_bottom", "Right Bottom"),
+            ("left_top", "左上"),
+            ("left_bottom", "左下"),
+            ("right_top", "右上"),
+            ("right_bottom", "右下"),
         ]
-        element_values = [item["value"] for item in self.element_options]
-        ttk.Label(text_frame, text="Position").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(text_frame, text="Element").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(text_frame, text="Custom Value").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(text_frame, text="Color").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
-        ttk.Label(text_frame, text="Bold").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
+        element_values = self.element_labels
+        ttk.Label(text_frame, text="位置").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="元素").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="自定义内容").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="颜色").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="加粗").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
 
         for row, (position, label) in enumerate(positions, start=1):
             ttk.Label(text_frame, text=label).grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
@@ -268,12 +349,12 @@ class SemiUtilsGuiApp:
         for position, _ in positions:
             self._refresh_custom_entry_state(position)
 
-        advanced_frame = ttk.LabelFrame(frame, text="Advanced")
+        advanced_frame = ttk.LabelFrame(frame, text="高级")
         advanced_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
         for col in range(4):
             advanced_frame.columnconfigure(col, weight=1)
 
-        ttk.Label(advanced_frame, text="Font Size Level").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(advanced_frame, text="字体大小级别").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
         self.font_size_combo = ttk.Combobox(
             advanced_frame,
             state="readonly",
@@ -283,7 +364,7 @@ class SemiUtilsGuiApp:
         )
         self.font_size_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(advanced_frame, text="Bold Font Size Level").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(advanced_frame, text="加粗字体大小级别").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
         self.bold_font_size_combo = ttk.Combobox(
             advanced_frame,
             state="readonly",
@@ -293,10 +374,10 @@ class SemiUtilsGuiApp:
         )
         self.bold_font_size_combo.grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(advanced_frame, text="Font Path").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(advanced_frame, text="字体路径").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Entry(advanced_frame, textvariable=self.font_path_var).grid(row=1, column=1, columnspan=3, sticky=tk.EW, padx=4, pady=4)
 
-        ttk.Label(advanced_frame, text="Bold Font Path").grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(advanced_frame, text="加粗字体路径").grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Entry(advanced_frame, textvariable=self.bold_font_path_var).grid(
             row=2,
             column=1,
@@ -306,7 +387,7 @@ class SemiUtilsGuiApp:
             pady=4,
         )
 
-        ttk.Label(advanced_frame, text="Alternative Font Path").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(advanced_frame, text="备用字体路径").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
         ttk.Entry(advanced_frame, textvariable=self.alt_font_path_var).grid(
             row=3,
             column=1,
@@ -316,7 +397,7 @@ class SemiUtilsGuiApp:
             pady=4,
         )
 
-        ttk.Label(advanced_frame, text="Alternative Bold Font Path").grid(
+        ttk.Label(advanced_frame, text="备用加粗字体路径").grid(
             row=4,
             column=0,
             sticky=tk.W,
@@ -333,7 +414,7 @@ class SemiUtilsGuiApp:
         )
 
     def _build_preview_panel(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Preview")
+        frame = ttk.LabelFrame(parent, text="预览")
         frame.pack(fill=tk.BOTH, expand=False, padx=4, pady=4)
 
         options = ttk.Frame(frame)
@@ -343,13 +424,13 @@ class SemiUtilsGuiApp:
 
         self.preview_check = ttk.Checkbutton(
             options,
-            text="Enable Preview Mode",
+            text="启用预览模式",
             variable=self.preview_var,
             command=self._refresh_control_state,
         )
         self.preview_check.grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(options, text="Preview Max Size").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(options, text="预览最大边长").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
         self.preview_max_size_spin = ttk.Spinbox(
             options,
             from_=200,
@@ -360,7 +441,7 @@ class SemiUtilsGuiApp:
         )
         self.preview_max_size_spin.grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Label(options, text="Preview Quality").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(options, text="预览质量").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
         self.preview_quality_spin = ttk.Spinbox(
             options,
             from_=1,
@@ -370,7 +451,7 @@ class SemiUtilsGuiApp:
         )
         self.preview_quality_spin.grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
 
-        ttk.Button(options, text="Open Preview", command=self._open_selected_preview).grid(
+        ttk.Button(options, text="打开预览", command=self._open_selected_preview).grid(
             row=0,
             column=5,
             sticky=tk.E,
@@ -398,7 +479,7 @@ class SemiUtilsGuiApp:
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, expand=False, padx=4, pady=4)
 
-        self.start_button = ttk.Button(frame, text="Start", command=self._start_processing)
+        self.start_button = ttk.Button(frame, text="开始处理", command=self._start_processing)
         self.start_button.pack(side=tk.LEFT)
 
         self.progress_bar = ttk.Progressbar(frame, orient=tk.HORIZONTAL, mode="determinate", maximum=100)
@@ -407,7 +488,7 @@ class SemiUtilsGuiApp:
         ttk.Label(frame, textvariable=self.status_var, width=34, anchor=tk.W).pack(side=tk.LEFT)
 
     def _build_log_panel(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Log")
+        frame = ttk.LabelFrame(parent, text="日志")
         frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         list_frame = ttk.Frame(frame)
@@ -425,10 +506,10 @@ class SemiUtilsGuiApp:
 
     def _add_files(self) -> None:
         selected = filedialog.askopenfilenames(
-            title="Select images",
+            title="选择图片",
             filetypes=[
-                ("Image files", "*.jpg *.jpeg *.png *.JPG *.JPEG *.PNG"),
-                ("All files", "*.*"),
+                ("图片文件", "*.jpg *.jpeg *.png *.JPG *.JPEG *.PNG"),
+                ("所有文件", "*.*"),
             ],
         )
         for raw in selected:
@@ -453,13 +534,15 @@ class SemiUtilsGuiApp:
         self._refresh_control_state()
 
     def _select_output_dir(self) -> None:
-        chosen = filedialog.askdirectory(title="Select output directory")
+        chosen = filedialog.askdirectory(title="选择输出目录")
         if chosen:
             self.output_dir_var.set(chosen)
 
     def _refresh_custom_entry_state(self, position: str) -> None:
         entry: ttk.Entry = getattr(self, f"custom_entry_{position}")
-        if self.element_name_vars[position].get() == CUSTOM_VALUE:
+        element_label = self.element_name_vars[position].get()
+        element_value = self.element_label_to_value.get(element_label, element_label)
+        if element_value == CUSTOM_VALUE:
             entry.config(state="normal")
         else:
             entry.config(state="disabled")
@@ -478,10 +561,15 @@ class SemiUtilsGuiApp:
 
     def _build_config_data(self) -> dict:
         config_data = copy.deepcopy(self.defaults)
-        config_data["layout"]["type"] = self.layout_var.get()
+        layout_label = self.layout_var.get()
+        config_data["layout"]["type"] = self.layout_label_to_value.get(layout_label, layout_label)
         config_data["layout"]["background_color"] = self.background_color_var.get()
         config_data["layout"]["logo_enable"] = self.logo_enable_var.get()
-        config_data["layout"]["logo_position"] = self.logo_position_var.get()
+        logo_position_label = self.logo_position_var.get()
+        config_data["layout"]["logo_position"] = self.logo_position_label_to_value.get(
+            logo_position_label,
+            logo_position_label,
+        )
 
         config_data["global"]["shadow"]["enable"] = self.shadow_var.get()
         config_data["global"]["white_margin"]["enable"] = self.white_margin_var.get()
@@ -497,7 +585,8 @@ class SemiUtilsGuiApp:
         config_data["base"]["alternative_bold_font"] = self.alt_bold_font_path_var.get().strip()
 
         for position in ("left_top", "left_bottom", "right_top", "right_bottom"):
-            element_name = self.element_name_vars[position].get()
+            element_label = self.element_name_vars[position].get()
+            element_name = self.element_label_to_value.get(element_label, element_label)
             element = config_data["layout"]["elements"][position]
             element["name"] = element_name
             element["color"] = self.element_color_vars[position].get().strip()
@@ -513,7 +602,7 @@ class SemiUtilsGuiApp:
         if self._is_running():
             return
         if not self.input_paths:
-            messagebox.showwarning("No Input", "Please add at least one image.")
+            messagebox.showwarning("缺少输入", "请至少添加一张图片。")
             return
 
         try:
@@ -524,7 +613,7 @@ class SemiUtilsGuiApp:
             output_dir_raw = self.output_dir_var.get().strip()
             output_dir = output_dir_raw if output_dir_raw and not preview_mode else None
         except Exception as exc:
-            messagebox.showerror("Invalid Config", f"Configuration error: {exc}")
+            messagebox.showerror("参数无效", f"参数配置错误：{exc}")
             return
 
         self.preview_paths.clear()
@@ -534,14 +623,14 @@ class SemiUtilsGuiApp:
         self.progress_bar["value"] = 0
 
         inputs = list(self.input_paths)
-        self.status_var.set(f"Running 0/{len(inputs)}")
-        self._log(f"Start processing. Total inputs: {len(inputs)}")
+        self.status_var.set(f"处理中 0/{len(inputs)}")
+        self._log(f"开始处理，共 {len(inputs)} 张图片。")
         if preview_mode:
-            self._log("Preview mode enabled.")
+            self._log("已启用预览模式。")
         elif output_dir:
-            self._log(f"Output dir: {output_dir}")
+            self._log(f"输出目录：{output_dir}")
         else:
-            self._log("Output dir not set. Files will be written next to source images.")
+            self._log("未设置输出目录，将输出到原图同级目录。")
 
         self.worker_thread = threading.Thread(
             target=self._run_process_worker,
@@ -600,13 +689,13 @@ class SemiUtilsGuiApp:
             progress = 0 if total == 0 else round(current / total * 100, 2)
             self.progress_bar["value"] = progress
             if error is None:
-                self._log(f"[{current}/{total}] OK: {source_path}")
+                self._log(f"[{current}/{total}] 成功：{source_path}")
             else:
-                self._log(f"[{current}/{total}] FAIL: {source_path} -> {error}")
-            self.status_var.set(f"Running {current}/{total}")
+                self._log(f"[{current}/{total}] 失败：{source_path} -> {error}")
+            self.status_var.set(f"处理中 {current}/{total}")
         elif kind == "error":
             _, source_path, exc = event
-            self._log(f"Error callback: {source_path} -> {exc}")
+            self._log(f"错误回调：{source_path} -> {exc}")
         elif kind == "preview":
             _, source_path, preview_path = event
             self.preview_paths.append(preview_path)
@@ -616,20 +705,20 @@ class SemiUtilsGuiApp:
             self.worker_thread = None
             self.progress_bar["value"] = 100
             if errors:
-                self.status_var.set(f"Done with errors ({len(errors)})")
-                self._log(f"Completed with {len(errors)} error(s).")
-                messagebox.showwarning("Completed", f"Done with {len(errors)} error(s). Check logs for details.")
+                self.status_var.set(f"完成（{len(errors)} 个错误）")
+                self._log(f"处理完成，出现 {len(errors)} 个错误。")
+                messagebox.showwarning("处理完成", f"处理完成，但有 {len(errors)} 个错误。请查看日志。")
             else:
-                self.status_var.set("Done")
-                self._log("Completed successfully.")
-                messagebox.showinfo("Completed", "All images processed successfully.")
+                self.status_var.set("完成")
+                self._log("处理完成，全部成功。")
+                messagebox.showinfo("处理完成", "全部图片处理成功。")
             self._refresh_control_state()
         elif kind == "fatal":
             _, exc = event
             self.worker_thread = None
-            self.status_var.set("Failed")
-            self._log(f"Fatal error: {exc}")
-            messagebox.showerror("Fatal Error", str(exc))
+            self.status_var.set("失败")
+            self._log(f"致命错误：{exc}")
+            messagebox.showerror("致命错误", str(exc))
             self._refresh_control_state()
 
     def _open_selected_preview(self) -> None:
@@ -640,7 +729,7 @@ class SemiUtilsGuiApp:
         try:
             webbrowser.open(preview_path.resolve().as_uri())
         except Exception as exc:
-            messagebox.showerror("Open Preview Failed", str(exc))
+            messagebox.showerror("打开预览失败", str(exc))
 
 
 def main() -> None:
@@ -657,19 +746,17 @@ def main() -> None:
 
     if should_fallback_to_web(system, mac_major, tk_version):
         print(
-            "Detected unsupported Tk runtime for desktop mode "
-            f"(macOS {mac_major}, Tk {tk_version}). Switching to web GUI..."
+            "检测到当前桌面模式的 Tk 运行时不兼容 "
+            f"(macOS {mac_major}, Tk {tk_version})，切换到安全 Web 模式..."
         )
-        from web_gui_app import run_server
-
-        run_server("127.0.0.1", 8765, open_browser=True)
+        run_safe_web_fallback("127.0.0.1", 8765)
         return
 
-    log_path = setup_temp_logging(name_prefix="semi-utils-desktop")
+    log_path = setup_temp_logging(name_prefix="semi-utils-desktop", cleanup_on_exit=False)
     root = tk.Tk()
     app = SemiUtilsGuiApp(root)
-    app._log("GUI is ready.")
-    app._log(f"Runtime log file: {log_path}")
+    app._log("GUI 已就绪。")
+    app._log(f"运行日志文件：{log_path}")
     root.mainloop()
 
 

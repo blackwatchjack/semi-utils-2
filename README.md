@@ -16,12 +16,27 @@
 
 说明：
 - 在支持 Tk 的环境会启动桌面 GUI。
-- 若检测到 macOS + Tk 8.5 不兼容运行时，会自动切换到浏览器 GUI（`http://127.0.0.1:8765`）。
+- 若检测到 macOS + Tk 8.5 不兼容运行时，会自动切换到“安全 Web 模式”：
+  - 优先在 `.app` 内打开内嵌 WebView 窗口。
+  - 若内嵌窗口不可用，则回退到系统浏览器（`http://127.0.0.1:8765`）。
 
 **快速使用（Web GUI）**
 ```bash
 ./start_web_gui.sh
 ```
+
+**macOS `.app` 打包（P0）**
+```bash
+./scripts/macos/build_app.sh
+```
+
+说明：
+- 单命令产出 `dist/semi-utils.app`
+- 构建脚本会自动安装 PyInstaller（在项目 `.venv` 中）
+- 构建脚本会自动安装 `pywebview`（用于 Tk 不兼容场景的 app 内嵌 Web 模式）
+- 构建时固定下载并校验 ExifTool `13.50`（SHA256 已写入脚本）
+- 打包产物内置字体、logos、images、ExifTool，无需依赖系统 `python/pip`
+- 详细步骤见 `docs/macos_app.md`
 
 GUI 支持：
 - 批量选择图片与输出目录
@@ -107,9 +122,13 @@ process_images(
 from logging_setup import setup_temp_logging
 
 log_path = setup_temp_logging()
-# 应用正常退出时自动清理该日志文件
+# 默认应用正常退出时自动清理该日志文件
 # 异常退出时，下一次启动会清理旧日志（默认保留 1 天）
 ```
+
+桌面 GUI / Web GUI 默认会保留运行日志（便于定位失败）：
+- 桌面 GUI：`/tmp/semi-utils-desktop-<pid>.log`
+- Web GUI：`/tmp/semi-utils-web-<pid>.log`
 
 **开发/测试**
 - 本项目自带虚拟环境，运行脚本或测试前先激活：`source .venv/bin/activate`
