@@ -36,6 +36,7 @@ class SemiUtilsGuiApp:
         self.layout_options = self.spec["enums"]["layout_type"]
         self.element_options = self.spec["enums"]["element_name"]
         self.logo_position_options = self.spec["enums"]["logo_position"]
+        self.font_size_options = self.spec["enums"]["font_size_level"]
 
         self.input_paths: list[Path] = []
         self.preview_paths: list[Path] = []
@@ -54,6 +55,12 @@ class SemiUtilsGuiApp:
         self.layout_var = tk.StringVar(value=layout_default)
         self.output_dir_var = tk.StringVar(value="")
         self.quality_var = tk.IntVar(value=self.defaults["base"]["quality"])
+        self.font_size_var = tk.IntVar(value=self.defaults["base"]["font_size"])
+        self.bold_font_size_var = tk.IntVar(value=self.defaults["base"]["bold_font_size"])
+        self.font_path_var = tk.StringVar(value=self.defaults["base"]["font"])
+        self.bold_font_path_var = tk.StringVar(value=self.defaults["base"]["bold_font"])
+        self.alt_font_path_var = tk.StringVar(value=self.defaults["base"]["alternative_font"])
+        self.alt_bold_font_path_var = tk.StringVar(value=self.defaults["base"]["alternative_bold_font"])
         self.background_color_var = tk.StringVar(value=self.defaults["layout"]["background_color"])
         self.shadow_var = tk.BooleanVar(value=self.defaults["global"]["shadow"]["enable"])
         self.white_margin_var = tk.BooleanVar(value=self.defaults["global"]["white_margin"]["enable"])
@@ -71,10 +78,14 @@ class SemiUtilsGuiApp:
 
         self.element_name_vars: dict[str, tk.StringVar] = {}
         self.element_value_vars: dict[str, tk.StringVar] = {}
+        self.element_color_vars: dict[str, tk.StringVar] = {}
+        self.element_bold_vars: dict[str, tk.BooleanVar] = {}
         for position in ("left_top", "left_bottom", "right_top", "right_bottom"):
             element = self.defaults["layout"]["elements"][position]
             self.element_name_vars[position] = tk.StringVar(value=element["name"])
             self.element_value_vars[position] = tk.StringVar(value=element.get("value", ""))
+            self.element_color_vars[position] = tk.StringVar(value=element.get("color", "#212121"))
+            self.element_bold_vars[position] = tk.BooleanVar(value=element.get("is_bold", False))
 
         self.progress_value_var = tk.DoubleVar(value=0)
         self.status_var = tk.StringVar(value="Ready")
@@ -207,7 +218,7 @@ class SemiUtilsGuiApp:
         text_frame = ttk.LabelFrame(frame, text="Text Elements")
         text_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
 
-        for col in range(3):
+        for col in range(5):
             text_frame.columnconfigure(col, weight=1)
 
         positions = [
@@ -217,7 +228,13 @@ class SemiUtilsGuiApp:
             ("right_bottom", "Right Bottom"),
         ]
         element_values = [item["value"] for item in self.element_options]
-        for row, (position, label) in enumerate(positions):
+        ttk.Label(text_frame, text="Position").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="Element").grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="Custom Value").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="Color").grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
+        ttk.Label(text_frame, text="Bold").grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
+
+        for row, (position, label) in enumerate(positions, start=1):
             ttk.Label(text_frame, text=label).grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
             combo = ttk.Combobox(
                 text_frame,
@@ -233,8 +250,87 @@ class SemiUtilsGuiApp:
             entry.grid(row=row, column=2, sticky=tk.EW, padx=4, pady=4)
             setattr(self, f"custom_entry_{position}", entry)
 
+            ttk.Entry(text_frame, textvariable=self.element_color_vars[position]).grid(
+                row=row,
+                column=3,
+                sticky=tk.EW,
+                padx=4,
+                pady=4,
+            )
+            ttk.Checkbutton(text_frame, variable=self.element_bold_vars[position]).grid(
+                row=row,
+                column=4,
+                sticky=tk.W,
+                padx=4,
+                pady=4,
+            )
+
         for position, _ in positions:
             self._refresh_custom_entry_state(position)
+
+        advanced_frame = ttk.LabelFrame(frame, text="Advanced")
+        advanced_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
+        for col in range(4):
+            advanced_frame.columnconfigure(col, weight=1)
+
+        ttk.Label(advanced_frame, text="Font Size Level").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
+        self.font_size_combo = ttk.Combobox(
+            advanced_frame,
+            state="readonly",
+            values=[item["value"] for item in self.font_size_options],
+            textvariable=self.font_size_var,
+            width=8,
+        )
+        self.font_size_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Label(advanced_frame, text="Bold Font Size Level").grid(row=0, column=2, sticky=tk.W, padx=4, pady=4)
+        self.bold_font_size_combo = ttk.Combobox(
+            advanced_frame,
+            state="readonly",
+            values=[item["value"] for item in self.font_size_options],
+            textvariable=self.bold_font_size_var,
+            width=8,
+        )
+        self.bold_font_size_combo.grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
+
+        ttk.Label(advanced_frame, text="Font Path").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(advanced_frame, textvariable=self.font_path_var).grid(row=1, column=1, columnspan=3, sticky=tk.EW, padx=4, pady=4)
+
+        ttk.Label(advanced_frame, text="Bold Font Path").grid(row=2, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(advanced_frame, textvariable=self.bold_font_path_var).grid(
+            row=2,
+            column=1,
+            columnspan=3,
+            sticky=tk.EW,
+            padx=4,
+            pady=4,
+        )
+
+        ttk.Label(advanced_frame, text="Alternative Font Path").grid(row=3, column=0, sticky=tk.W, padx=4, pady=4)
+        ttk.Entry(advanced_frame, textvariable=self.alt_font_path_var).grid(
+            row=3,
+            column=1,
+            columnspan=3,
+            sticky=tk.EW,
+            padx=4,
+            pady=4,
+        )
+
+        ttk.Label(advanced_frame, text="Alternative Bold Font Path").grid(
+            row=4,
+            column=0,
+            sticky=tk.W,
+            padx=4,
+            pady=4,
+        )
+        ttk.Entry(advanced_frame, textvariable=self.alt_bold_font_path_var).grid(
+            row=4,
+            column=1,
+            columnspan=3,
+            sticky=tk.EW,
+            padx=4,
+            pady=4,
+        )
 
     def _build_preview_panel(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Preview")
@@ -393,11 +489,19 @@ class SemiUtilsGuiApp:
         config_data["global"]["padding_with_original_ratio"]["enable"] = self.padding_ratio_var.get()
         config_data["global"]["focal_length"]["use_equivalent_focal_length"] = self.equivalent_focal_length_var.get()
         config_data["base"]["quality"] = int(self.quality_var.get())
+        config_data["base"]["font_size"] = int(self.font_size_var.get())
+        config_data["base"]["bold_font_size"] = int(self.bold_font_size_var.get())
+        config_data["base"]["font"] = self.font_path_var.get().strip()
+        config_data["base"]["bold_font"] = self.bold_font_path_var.get().strip()
+        config_data["base"]["alternative_font"] = self.alt_font_path_var.get().strip()
+        config_data["base"]["alternative_bold_font"] = self.alt_bold_font_path_var.get().strip()
 
         for position in ("left_top", "left_bottom", "right_top", "right_bottom"):
             element_name = self.element_name_vars[position].get()
             element = config_data["layout"]["elements"][position]
             element["name"] = element_name
+            element["color"] = self.element_color_vars[position].get().strip()
+            element["is_bold"] = self.element_bold_vars[position].get()
             if element_name == CUSTOM_VALUE:
                 element["value"] = self.element_value_vars[position].get()
             elif "value" in element:

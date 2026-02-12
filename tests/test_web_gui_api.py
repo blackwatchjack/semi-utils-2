@@ -11,8 +11,10 @@ from pathlib import Path
 
 from http.server import ThreadingHTTPServer
 
+import web_gui_app
 from web_gui_app import SemiWebHandler
 from web_gui_app import reset_jobs_for_tests
+from web_gui_app import set_max_concurrent_jobs_for_tests
 
 
 def _multipart_body(fields: dict[str, str], files: list[tuple[str, str, bytes, str]]) -> tuple[bytes, str]:
@@ -76,8 +78,9 @@ class TestWebGuiApi:
 
     def setup_method(self):
         reset_jobs_for_tests()
+        set_max_concurrent_jobs_for_tests(2)
 
-    def _create_job(self, preview: bool = False):
+    def _create_job(self, preview: bool = False, extra_fields: dict[str, str] | None = None):
         fields = {
             "layout": "watermark_right_logo",
             "quality": "90",
@@ -90,6 +93,8 @@ class TestWebGuiApi:
                     "preview_quality": "70",
                 }
             )
+        if extra_fields:
+            fields.update(extra_fields)
 
         body, boundary = _multipart_body(
             fields,
@@ -115,7 +120,7 @@ class TestWebGuiApi:
             payload = json.loads(data.decode("utf-8"))
             assert payload["ok"] is True
             last_job = payload["job"]
-            if last_job["status"] in {"done", "error"}:
+            if last_job["status"] in {"done", "error", "cancelled"}:
                 return last_job
             time.sleep(0.2)
         raise AssertionError(f"Timeout waiting job {job_id}, last state: {last_job}")
@@ -162,6 +167,51 @@ class TestWebGuiApi:
             assert report["mode"] == "preview"
             assert report["error_count"] == 0
 
+    def test_extended_config_fields_are_forwarded(self, monkeypatch):
+        captured: dict[str, dict] = {}
+
+        def fake_process_images(inputs, config_data=None, on_progress=None, **kwargs):
+            captured["config_data"] = config_data
+            if on_progress:
+                on_progress(1, 1, Path(inputs[0]), None)
+            return []
+
+        monkeypatch.setattr(web_gui_app, "process_images", fake_process_images)
+
+        job_id = self._create_job(
+            preview=False,
+            extra_fields={
+                "font_size": "3",
+                "bold_font_size": "2",
+                "font": "./fonts/Roboto-Regular.ttf",
+                "bold_font": "./fonts/Roboto-Bold.ttf",
+                "alternative_font": "./fonts/Roboto-Light.ttf",
+                "alternative_bold_font": "./fonts/Roboto-Medium.ttf",
+                "element_left_top_name": "Custom",
+                "element_left_top_value": "Semi Utils",
+                "element_left_top_color": "#123456",
+                "element_left_top_is_bold": "on",
+                "element_left_bottom_color": "#654321",
+                "element_right_bottom_is_bold": "on",
+            },
+        )
+        job = self._wait_done(job_id)
+        assert job["status"] == "done"
+
+        config_data = captured["config_data"]
+        assert config_data["base"]["font_size"] == 3
+        assert config_data["base"]["bold_font_size"] == 2
+        assert config_data["base"]["font"] == "./fonts/Roboto-Regular.ttf"
+        assert config_data["base"]["bold_font"] == "./fonts/Roboto-Bold.ttf"
+        assert config_data["base"]["alternative_font"] == "./fonts/Roboto-Light.ttf"
+        assert config_data["base"]["alternative_bold_font"] == "./fonts/Roboto-Medium.ttf"
+        assert config_data["layout"]["elements"]["left_top"]["name"] == "Custom"
+        assert config_data["layout"]["elements"]["left_top"]["value"] == "Semi Utils"
+        assert config_data["layout"]["elements"]["left_top"]["color"] == "#123456"
+        assert config_data["layout"]["elements"]["left_top"]["is_bold"] is True
+        assert config_data["layout"]["elements"]["left_bottom"]["color"] == "#654321"
+        assert config_data["layout"]["elements"]["right_bottom"]["is_bold"] is True
+
     def test_reject_invalid_extension(self):
         body, boundary = _multipart_body(
             {},
@@ -190,3 +240,79 @@ class TestWebGuiApi:
         payload = json.loads(data.decode("utf-8"))
         assert payload["ok"] is False
         assert payload["error"]["code"] == "invalid_input"
+
+    def test_cancel_running_job(self, monkeypatch):
+        started = threading.Event()
+
+        def fake_process_images(inputs, on_progress=None, **kwargs):
+            started.set()
+            time.sleep(0.6)
+            if on_progress:
+                on_progress(1, 1, Path(inputs[0]), None)
+            return []
+
+        monkeypatch.setattr(web_gui_app, "process_images", fake_process_images)
+
+        job_id = self._create_job(preview=False)
+        assert started.wait(timeout=2.0)
+
+        status, _, data = self.client.request("POST", f"/api/jobs/{job_id}/cancel")
+        assert status == 202
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is True
+        assert payload["job"]["status"] in {"cancelling", "cancelled"}
+
+        job = self._wait_done(job_id, timeout_sec=5.0)
+        assert job["status"] == "cancelled"
+        assert job["cancel_requested"] is True
+
+    def test_concurrency_limit_puts_job_into_waiting(self, monkeypatch):
+        set_max_concurrent_jobs_for_tests(1)
+        release = threading.Event()
+        started_count = 0
+        started_lock = threading.Lock()
+
+        def fake_process_images(inputs, on_progress=None, **kwargs):
+            nonlocal started_count
+            with started_lock:
+                started_count += 1
+            release.wait(timeout=5.0)
+            if on_progress:
+                on_progress(1, 1, Path(inputs[0]), None)
+            return []
+
+        monkeypatch.setattr(web_gui_app, "process_images", fake_process_images)
+
+        first_job_id = self._create_job(preview=False)
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            status, _, data = self.client.request("GET", f"/api/jobs/{first_job_id}")
+            assert status == 200
+            payload = json.loads(data.decode("utf-8"))
+            if payload["job"]["status"] == "running":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("First job did not enter running state")
+
+        second_job_id = self._create_job(preview=False)
+
+        waiting_seen = False
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            status, _, data = self.client.request("GET", f"/api/jobs/{second_job_id}")
+            assert status == 200
+            payload = json.loads(data.decode("utf-8"))
+            if payload["job"]["status"] == "waiting":
+                waiting_seen = True
+                break
+            time.sleep(0.05)
+        assert waiting_seen is True
+        assert started_count == 1
+
+        release.set()
+        first_job = self._wait_done(first_job_id, timeout_sec=5.0)
+        second_job = self._wait_done(second_job_id, timeout_sec=5.0)
+        assert first_job["status"] == "done"
+        assert second_job["status"] == "done"

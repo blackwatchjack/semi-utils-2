@@ -26,21 +26,27 @@
 GUI 支持：
 - 批量选择图片与输出目录
 - 核心布局/质量/白边/阴影/Logo 参数
-- 文本元素选择与自定义文本
+- 文本元素选择与自定义文本（含颜色、粗体）
+- 字体配置（字体大小级别、字体路径、备用字体路径）
 - 预览模式（生成临时预览图并可点击打开）
 - 处理进度与错误日志
 
 Web GUI 支持：
 - 浏览器上传多张图片并处理
 - 任务化处理（提交任务、轮询进度、完成后下载 ZIP）
+- 任务取消（运行中/排队中任务）
+- 任务并发限流（默认最多 2 个并发处理任务）
 - 下载处理结果 ZIP（含 `report.json` 与失败明细）
 - 支持预览模式 ZIP 下载
 
 Web API（供前端或外部调用）：
 - `POST /api/process`：提交任务（multipart/form-data）
 - `GET /api/jobs/<job_id>`：查询任务状态与进度
+- `POST /api/jobs/<job_id>/cancel`：取消任务
 - `GET /api/jobs/<job_id>/download`：下载 ZIP 结果（任务完成后）
 - `GET /health`：健康检查
+
+并发上限可通过环境变量 `SEMI_WEB_MAX_CONCURRENT_JOBS` 配置（最小 1，最大 16）。
 
 **快速使用（Python 调用）**
 ```python

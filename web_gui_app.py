@@ -38,12 +38,27 @@ MAX_FILES = 200
 MAX_REQUEST_BYTES = 512 * 1024 * 1024
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_LIVE_JOBS = 500
+DEFAULT_MAX_CONCURRENT_JOBS = 2
 JOB_TTL_SECONDS = 30 * 60
 CLEANUP_INTERVAL_SECONDS = 60
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, "JobRecord"] = {}
 CLEANUP_THREAD_STARTED = False
+
+try:
+    _env_concurrent_jobs = int(os.environ.get("SEMI_WEB_MAX_CONCURRENT_JOBS", str(DEFAULT_MAX_CONCURRENT_JOBS)))
+except (TypeError, ValueError):
+    _env_concurrent_jobs = DEFAULT_MAX_CONCURRENT_JOBS
+
+MAX_CONCURRENT_JOBS = max(1, min(_env_concurrent_jobs, 16))
+RUNNING_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
+POSITIONS: tuple[tuple[str, str], ...] = (
+    ("left_top", "Left Top"),
+    ("left_bottom", "Left Bottom"),
+    ("right_top", "Right Top"),
+    ("right_bottom", "Right Bottom"),
+)
 
 
 @dataclass
@@ -66,6 +81,11 @@ class JobRecord:
     preview_mode: bool = False
     preview_max_size: int | None = None
     preview_quality: int | None = None
+    cancel_requested: bool = False
+
+
+class JobCancelledError(Exception):
+    pass
 
 
 def _parse_int(raw: str | None, default: int, low: int | None = None, high: int | None = None) -> int:
@@ -80,8 +100,31 @@ def _parse_int(raw: str | None, default: int, low: int | None = None, high: int 
     return value
 
 
+def _set_max_concurrent_jobs(limit: int) -> None:
+    global MAX_CONCURRENT_JOBS, RUNNING_SLOTS
+    normalized = max(1, limit)
+    MAX_CONCURRENT_JOBS = normalized
+    RUNNING_SLOTS = threading.BoundedSemaphore(normalized)
+
+
 def _field_checked(form: cgi.FieldStorage, name: str) -> bool:
     return form.getfirst(name) is not None
+
+
+def _checked_attr(value: bool) -> str:
+    return " checked" if value else ""
+
+
+def _build_options(options: list[dict[str, Any]], selected: Any) -> str:
+    selected_text = str(selected)
+    rows = []
+    for item in options:
+        value = str(item["value"])
+        selected_attr = " selected" if value == selected_text else ""
+        rows.append(
+            f'<option value="{escape(value)}"{selected_attr}>{escape(str(item["label"]))}</option>'
+        )
+    return "".join(rows)
 
 
 def _unique_path(base_dir: Path, filename: str, used: set[str]) -> Path:
@@ -105,6 +148,20 @@ def _build_config(form: cgi.FieldStorage) -> dict:
     config["layout"]["logo_position"] = form.getfirst("logo_position", DEFAULTS["layout"]["logo_position"])
 
     config["base"]["quality"] = _parse_int(form.getfirst("quality"), DEFAULTS["base"]["quality"], 1, 100)
+    config["base"]["font_size"] = _parse_int(form.getfirst("font_size"), DEFAULTS["base"]["font_size"], 1, 3)
+    config["base"]["bold_font_size"] = _parse_int(
+        form.getfirst("bold_font_size"),
+        DEFAULTS["base"]["bold_font_size"],
+        1,
+        3,
+    )
+    config["base"]["font"] = form.getfirst("font", DEFAULTS["base"]["font"])
+    config["base"]["bold_font"] = form.getfirst("bold_font", DEFAULTS["base"]["bold_font"])
+    config["base"]["alternative_font"] = form.getfirst("alternative_font", DEFAULTS["base"]["alternative_font"])
+    config["base"]["alternative_bold_font"] = form.getfirst(
+        "alternative_bold_font",
+        DEFAULTS["base"]["alternative_bold_font"],
+    )
 
     config["global"]["shadow"]["enable"] = _field_checked(form, "shadow")
     config["global"]["white_margin"]["enable"] = _field_checked(form, "white_margin")
@@ -117,12 +174,16 @@ def _build_config(form: cgi.FieldStorage) -> dict:
     config["global"]["padding_with_original_ratio"]["enable"] = _field_checked(form, "padding_ratio")
     config["global"]["focal_length"]["use_equivalent_focal_length"] = _field_checked(form, "equivalent_focal_length")
 
-    for position in ("left_top", "left_bottom", "right_top", "right_bottom"):
+    for position, _label in POSITIONS:
         name_key = f"element_{position}_name"
         value_key = f"element_{position}_value"
+        color_key = f"element_{position}_color"
+        bold_key = f"element_{position}_is_bold"
         element_name = form.getfirst(name_key, config["layout"]["elements"][position]["name"])
         element = config["layout"]["elements"][position]
         element["name"] = element_name
+        element["color"] = form.getfirst(color_key, element.get("color", "#212121"))
+        element["is_bold"] = _field_checked(form, bold_key)
         if element_name == CUSTOM_VALUE:
             element["value"] = form.getfirst(value_key, "")
         elif "value" in element:
@@ -165,6 +226,9 @@ def _serialize_job(job: JobRecord) -> dict[str, Any]:
             "errors": job.errors,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
+            "cancel_requested": job.cancel_requested,
+            "can_cancel": job.status in {"queued", "waiting", "running", "cancelling"},
+            "cancel_url": f"/api/jobs/{job.job_id}/cancel",
             "download_url": f"/api/jobs/{job.job_id}/download" if done else None,
         },
     }
@@ -235,7 +299,7 @@ def _cleanup_expired_jobs() -> None:
 
     with JOBS_LOCK:
         for job_id, job in JOBS.items():
-            done_like = job.status in {"done", "error"}
+            done_like = job.status in {"done", "error", "cancelled"}
             age = now - job.updated_at
             if done_like and age >= JOB_TTL_SECONDS:
                 expired_ids.append(job_id)
@@ -255,6 +319,11 @@ def reset_jobs_for_tests() -> None:
     for job in jobs:
         if job.workspace_dir and job.workspace_dir.exists():
             shutil.rmtree(job.workspace_dir, ignore_errors=True)
+    _set_max_concurrent_jobs(DEFAULT_MAX_CONCURRENT_JOBS)
+
+
+def set_max_concurrent_jobs_for_tests(limit: int) -> None:
+    _set_max_concurrent_jobs(limit)
 
 
 def _cleanup_loop() -> None:
@@ -283,19 +352,80 @@ def _update_job(job_id: str, **changes: Any) -> JobRecord | None:
         return job
 
 
+def _is_cancel_requested(job_id: str) -> bool:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return bool(job and job.cancel_requested)
+
+
+def _request_cancel(job_id: str) -> tuple[JobRecord | None, str]:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None, "not_found"
+        if job.status in {"done", "error"}:
+            return job, "terminal"
+        if job.status == "cancelled":
+            return job, "already_cancelled"
+        job.cancel_requested = True
+        if job.status in {"queued", "waiting"}:
+            job.status = "cancelled"
+            job.message = "Cancelled"
+        elif job.status in {"running", "cancelling"}:
+            job.status = "cancelling"
+            job.message = "Cancellation requested, waiting for current step"
+        else:
+            job.status = "cancelling"
+            job.message = "Cancellation requested"
+        job.updated_at = time.time()
+        return job, "accepted"
+
+
+def _count_output_files(job: JobRecord, output_dir: Path | None, preview_paths: list[Path]) -> int:
+    if job.preview_mode:
+        return len([path for path in preview_paths if path.exists()])
+    if output_dir is None:
+        return 0
+    count = 0
+    for source_path in job.input_paths:
+        if (output_dir / source_path.name).exists():
+            count += 1
+    return count
+
+
 def _run_job(job_id: str) -> None:
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
             return
 
-    _update_job(job_id, status="running", message="Processing started")
+    if _is_cancel_requested(job_id):
+        _update_job(job_id, status="cancelled", message="Cancelled", cancel_requested=True)
+        return
 
+    _update_job(job_id, status="waiting", message="Waiting for available worker slot")
+
+    slot_acquired = False
     preview_paths: list[Path] = []
     output_dir: Path | None = None
     preview_dir: Path | None = None
+    error_items: list[dict[str, str]] = []
 
     try:
+        while True:
+            if _is_cancel_requested(job_id):
+                _update_job(job_id, status="cancelled", message="Cancelled", cancel_requested=True)
+                return
+            if RUNNING_SLOTS.acquire(timeout=0.2):
+                slot_acquired = True
+                break
+
+        if _is_cancel_requested(job_id):
+            _update_job(job_id, status="cancelled", message="Cancelled", cancel_requested=True)
+            return
+
+        _update_job(job_id, status="running", message="Processing started")
+
         if job.workspace_dir is None:
             raise RuntimeError("Missing workspace directory")
 
@@ -307,11 +437,16 @@ def _run_job(job_id: str) -> None:
             output_dir.mkdir(parents=True, exist_ok=True)
 
         def on_progress(current: int, total: int, source_path: Path, error: Exception | None) -> None:
+            if _is_cancel_requested(job_id):
+                raise JobCancelledError("Job cancelled by user")
             if error is None:
                 msg = f"Processed {source_path.name}"
             else:
                 msg = f"Failed {source_path.name}: {error}"
             _update_job(job_id, current=current, total=total, message=msg)
+
+        def on_error(source_path: Path, exc: Exception) -> None:
+            error_items.append({"source": str(source_path), "error": str(exc)})
 
         errors = process_images(
             inputs=job.input_paths,
@@ -322,6 +457,7 @@ def _run_job(job_id: str) -> None:
             preview_max_size=job.preview_max_size,
             preview_quality=job.preview_quality,
             on_progress=on_progress,
+            on_error=on_error,
             on_preview=(lambda _src, p: preview_paths.append(Path(p))) if job.preview_mode else None,
         )
 
@@ -362,19 +498,31 @@ def _run_job(job_id: str) -> None:
             current=len(job.input_paths),
             total=len(job.input_paths),
         )
+    except JobCancelledError:
+        _update_job(
+            job_id,
+            status="cancelled",
+            message="Cancelled",
+            output_count=_count_output_files(job, output_dir, preview_paths),
+            errors=error_items,
+            cancel_requested=True,
+        )
     except Exception as exc:
         _update_job(job_id, status="error", message=f"Processing failed: {exc}")
+    finally:
+        if slot_acquired:
+            RUNNING_SLOTS.release()
 
 
 def _build_html() -> bytes:
-    layout_options = "".join(
-        f'<option value="{escape(item["value"])}">{escape(item["label"])}</option>'
-        for item in SPEC["enums"]["layout_type"]
-    )
-    element_options = "".join(
-        f'<option value="{escape(str(item["value"]))}">{escape(item["label"])}</option>'
-        for item in SPEC["enums"]["element_name"]
-    )
+    layout_options = _build_options(SPEC["enums"]["layout_type"], DEFAULTS["layout"]["type"])
+    logo_position_options = _build_options(SPEC["enums"]["logo_position"], DEFAULTS["layout"]["logo_position"])
+    font_size_options = _build_options(SPEC["enums"]["font_size_level"], DEFAULTS["base"]["font_size"])
+    bold_font_size_options = _build_options(SPEC["enums"]["font_size_level"], DEFAULTS["base"]["bold_font_size"])
+    element_options_by_position = {
+        position: _build_options(SPEC["enums"]["element_name"], DEFAULTS["layout"]["elements"][position]["name"])
+        for position, _label in POSITIONS
+    }
 
     html = f"""<!doctype html>
 <html lang="zh-CN">
@@ -524,85 +672,137 @@ def _build_html() -> bytes:
         </div>
         <div>
           <label>Quality (1-100)</label>
-          <input type="number" name="quality" min="1" max="100" value="100" />
+          <input type="number" name="quality" min="1" max="100" value="{DEFAULTS["base"]["quality"]}" />
         </div>
 
         <div>
           <label>Background Color</label>
-          <input type="text" name="background_color" value="#ffffff" />
+          <input type="color" name="background_color" value="{escape(DEFAULTS["layout"]["background_color"])}" />
         </div>
         <div>
           <label>Logo Position</label>
-          <select name="logo_position">
-            <option value="left">left</option>
-            <option value="right" selected>right</option>
-          </select>
+          <select id="logoPositionInput" name="logo_position">{logo_position_options}</select>
         </div>
 
         <div class="full inline">
-          <label><input type="checkbox" name="shadow" /> Shadow</label>
-          <label><input type="checkbox" name="white_margin" checked /> White Margin</label>
-          <label><input type="checkbox" name="padding_ratio" /> Padding With Original Ratio</label>
-          <label><input type="checkbox" name="equivalent_focal_length" /> Use Equivalent Focal Length</label>
-          <label><input type="checkbox" name="logo_enable" /> Logo Enable</label>
+          <label><input type="checkbox" name="shadow"{_checked_attr(DEFAULTS["global"]["shadow"]["enable"])} /> Shadow</label>
+          <label><input id="whiteMarginCheck" type="checkbox" name="white_margin"{_checked_attr(DEFAULTS["global"]["white_margin"]["enable"])} /> White Margin</label>
+          <label><input type="checkbox" name="padding_ratio"{_checked_attr(DEFAULTS["global"]["padding_with_original_ratio"]["enable"])} /> Padding With Original Ratio</label>
+          <label><input type="checkbox" name="equivalent_focal_length"{_checked_attr(DEFAULTS["global"]["focal_length"]["use_equivalent_focal_length"])} /> Use Equivalent Focal Length</label>
+          <label><input id="logoEnableCheck" type="checkbox" name="logo_enable"{_checked_attr(DEFAULTS["layout"]["logo_enable"])} /> Logo Enable</label>
         </div>
 
         <div>
           <label>White Margin Width (%)</label>
-          <input type="number" name="white_margin_width" min="0" max="30" value="3" />
+          <input id="whiteMarginWidthInput" type="number" name="white_margin_width" min="0" max="30" value="{DEFAULTS["global"]["white_margin"]["width"]}" />
         </div>
 
         <div class="full inline">
-          <label><input type="checkbox" name="preview" /> Preview Mode</label>
+          <label><input id="previewCheck" type="checkbox" name="preview" /> Preview Mode</label>
         </div>
         <div>
           <label>Preview Max Size</label>
-          <input type="number" name="preview_max_size" min="200" max="8000" value="1600" />
+          <input id="previewMaxSizeInput" type="number" name="preview_max_size" min="200" max="8000" value="1600" />
         </div>
         <div>
           <label>Preview Quality</label>
-          <input type="number" name="preview_quality" min="1" max="100" value="80" />
+          <input id="previewQualityInput" type="number" name="preview_quality" min="1" max="100" value="80" />
         </div>
 
         <div>
           <label>Left Top Element</label>
-          <select name="element_left_top_name">{element_options}</select>
+          <select id="element_left_top_name" name="element_left_top_name">{element_options_by_position["left_top"]}</select>
         </div>
         <div>
           <label>Left Top Custom Value</label>
-          <input type="text" name="element_left_top_value" />
+          <input id="element_left_top_value" type="text" name="element_left_top_value" value="{escape(DEFAULTS["layout"]["elements"]["left_top"].get("value", ""))}" />
+        </div>
+        <div>
+          <label>Left Top Color</label>
+          <input type="color" name="element_left_top_color" value="{escape(DEFAULTS["layout"]["elements"]["left_top"].get("color", "#212121"))}" />
+        </div>
+        <div>
+          <label><input type="checkbox" name="element_left_top_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["left_top"].get("is_bold", False))} /> Left Top Bold</label>
         </div>
 
         <div>
           <label>Left Bottom Element</label>
-          <select name="element_left_bottom_name">{element_options}</select>
+          <select id="element_left_bottom_name" name="element_left_bottom_name">{element_options_by_position["left_bottom"]}</select>
         </div>
         <div>
           <label>Left Bottom Custom Value</label>
-          <input type="text" name="element_left_bottom_value" />
+          <input id="element_left_bottom_value" type="text" name="element_left_bottom_value" value="{escape(DEFAULTS["layout"]["elements"]["left_bottom"].get("value", ""))}" />
+        </div>
+        <div>
+          <label>Left Bottom Color</label>
+          <input type="color" name="element_left_bottom_color" value="{escape(DEFAULTS["layout"]["elements"]["left_bottom"].get("color", "#212121"))}" />
+        </div>
+        <div>
+          <label><input type="checkbox" name="element_left_bottom_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["left_bottom"].get("is_bold", False))} /> Left Bottom Bold</label>
         </div>
 
         <div>
           <label>Right Top Element</label>
-          <select name="element_right_top_name">{element_options}</select>
+          <select id="element_right_top_name" name="element_right_top_name">{element_options_by_position["right_top"]}</select>
         </div>
         <div>
           <label>Right Top Custom Value</label>
-          <input type="text" name="element_right_top_value" />
+          <input id="element_right_top_value" type="text" name="element_right_top_value" value="{escape(DEFAULTS["layout"]["elements"]["right_top"].get("value", ""))}" />
+        </div>
+        <div>
+          <label>Right Top Color</label>
+          <input type="color" name="element_right_top_color" value="{escape(DEFAULTS["layout"]["elements"]["right_top"].get("color", "#212121"))}" />
+        </div>
+        <div>
+          <label><input type="checkbox" name="element_right_top_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["right_top"].get("is_bold", False))} /> Right Top Bold</label>
         </div>
 
         <div>
           <label>Right Bottom Element</label>
-          <select name="element_right_bottom_name">{element_options}</select>
+          <select id="element_right_bottom_name" name="element_right_bottom_name">{element_options_by_position["right_bottom"]}</select>
         </div>
         <div>
           <label>Right Bottom Custom Value</label>
-          <input type="text" name="element_right_bottom_value" />
+          <input id="element_right_bottom_value" type="text" name="element_right_bottom_value" value="{escape(DEFAULTS["layout"]["elements"]["right_bottom"].get("value", ""))}" />
+        </div>
+        <div>
+          <label>Right Bottom Color</label>
+          <input type="color" name="element_right_bottom_color" value="{escape(DEFAULTS["layout"]["elements"]["right_bottom"].get("color", "#212121"))}" />
+        </div>
+        <div>
+          <label><input type="checkbox" name="element_right_bottom_is_bold"{_checked_attr(DEFAULTS["layout"]["elements"]["right_bottom"].get("is_bold", False))} /> Right Bottom Bold</label>
+        </div>
+
+        <div>
+          <label>Font Size Level</label>
+          <select name="font_size">{font_size_options}</select>
+        </div>
+        <div>
+          <label>Bold Font Size Level</label>
+          <select name="bold_font_size">{bold_font_size_options}</select>
+        </div>
+
+        <div class="full">
+          <label>Font Path</label>
+          <input type="text" name="font" value="{escape(DEFAULTS["base"]["font"])}" />
+        </div>
+        <div class="full">
+          <label>Bold Font Path</label>
+          <input type="text" name="bold_font" value="{escape(DEFAULTS["base"]["bold_font"])}" />
+        </div>
+        <div class="full">
+          <label>Alternative Font Path</label>
+          <input type="text" name="alternative_font" value="{escape(DEFAULTS["base"]["alternative_font"])}" />
+        </div>
+        <div class="full">
+          <label>Alternative Bold Font Path</label>
+          <input type="text" name="alternative_bold_font" value="{escape(DEFAULTS["base"]["alternative_bold_font"])}" />
         </div>
       </div>
 
       <div class="actions">
         <button id="submitBtn" type="submit">开始处理</button>
+        <button id="cancelBtn" type="button" style="display:none; max-width: 160px; background: #b42318;">取消任务</button>
         <span>处理完成后会提供 ZIP 下载（包含 report.json）</span>
       </div>
       <div id="status" class="status"></div>
@@ -618,6 +818,7 @@ def _build_html() -> bytes:
   <script>
     const form = document.getElementById("processForm");
     const submitBtn = document.getElementById("submitBtn");
+    const cancelBtn = document.getElementById("cancelBtn");
     const statusEl = document.getElementById("status");
     const resultPanel = document.getElementById("resultPanel");
     const resultSummary = document.getElementById("resultSummary");
@@ -625,6 +826,51 @@ def _build_html() -> bytes:
     const downloadLink = document.getElementById("downloadLink");
 
     let pollTimer = null;
+    let currentJobId = null;
+    const customValueKey = {json.dumps(CUSTOM_VALUE)};
+
+    const previewCheck = document.getElementById("previewCheck");
+    const previewMaxSizeInput = document.getElementById("previewMaxSizeInput");
+    const previewQualityInput = document.getElementById("previewQualityInput");
+    const logoEnableCheck = document.getElementById("logoEnableCheck");
+    const logoPositionInput = document.getElementById("logoPositionInput");
+    const whiteMarginCheck = document.getElementById("whiteMarginCheck");
+    const whiteMarginWidthInput = document.getElementById("whiteMarginWidthInput");
+
+    function updateDependentInputs() {{
+      logoPositionInput.disabled = !logoEnableCheck.checked;
+      whiteMarginWidthInput.disabled = !whiteMarginCheck.checked;
+      previewMaxSizeInput.disabled = !previewCheck.checked;
+      previewQualityInput.disabled = !previewCheck.checked;
+    }}
+
+    function updateCustomValueInput(position) {{
+      const select = document.getElementById(`element_${{position}}_name`);
+      const input = document.getElementById(`element_${{position}}_value`);
+      if (!select || !input) {{
+        return;
+      }}
+      input.disabled = select.value !== customValueKey;
+    }}
+
+    ["left_top", "left_bottom", "right_top", "right_bottom"].forEach((position) => {{
+      const select = document.getElementById(`element_${{position}}_name`);
+      if (select) {{
+        select.addEventListener("change", () => updateCustomValueInput(position));
+      }}
+      updateCustomValueInput(position);
+    }});
+
+    previewCheck.addEventListener("change", updateDependentInputs);
+    logoEnableCheck.addEventListener("change", updateDependentInputs);
+    whiteMarginCheck.addEventListener("change", updateDependentInputs);
+    updateDependentInputs();
+
+    function setRunningState(running) {{
+      submitBtn.disabled = running;
+      cancelBtn.style.display = running ? "inline-block" : "none";
+      cancelBtn.disabled = !running;
+    }}
 
     function resetResult() {{
       resultPanel.style.display = "none";
@@ -638,8 +884,9 @@ def _build_html() -> bytes:
       const percent = job.progress.percent;
       statusEl.textContent = `状态: ${{job.status}} | 进度: ${{job.progress.current}}/${{job.progress.total}} (${{percent}}%)\n${{job.message || ""}}`;
 
-      if (job.status === "done" || job.status === "error") {{
-        submitBtn.disabled = false;
+      if (job.status === "done" || job.status === "error" || job.status === "cancelled") {{
+        setRunningState(false);
+        currentJobId = null;
         if (pollTimer) {{
           clearInterval(pollTimer);
           pollTimer = null;
@@ -650,6 +897,8 @@ def _build_html() -> bytes:
           resultSummary.innerHTML = `<span class="ok">处理完成：</span>输出 ${{job.output_count}} 张，失败 ${{job.error_count}} 张。`;
           downloadLink.href = `/api/jobs/${{job.job_id}}/download`;
           downloadLink.style.display = "inline-block";
+        }} else if (job.status === "cancelled") {{
+          resultSummary.innerHTML = `<span class="err">任务已取消：</span>已处理 ${{job.output_count}} 张。`;
         }} else {{
           resultSummary.innerHTML = `<span class="err">处理失败：</span>${{job.message}}`;
         }}
@@ -677,7 +926,7 @@ def _build_html() -> bytes:
 
     form.addEventListener("submit", async (event) => {{
       event.preventDefault();
-      submitBtn.disabled = true;
+      setRunningState(true);
       resetResult();
       statusEl.textContent = "任务提交中...";
 
@@ -692,12 +941,32 @@ def _build_html() -> bytes:
         }}
 
         const jobId = payload.job_id;
+        currentJobId = jobId;
         statusEl.textContent = `任务已创建: ${{jobId}}，开始轮询进度...`;
         await pollJob(jobId);
         pollTimer = setInterval(() => pollJob(jobId), 800);
       }} catch (err) {{
-        submitBtn.disabled = false;
+        setRunningState(false);
+        currentJobId = null;
         statusEl.textContent = `提交失败: ${{err.message}}`;
+      }}
+    }});
+
+    cancelBtn.addEventListener("click", async () => {{
+      if (!currentJobId) {{
+        return;
+      }}
+      cancelBtn.disabled = true;
+      try {{
+        const resp = await fetch(`/api/jobs/${{currentJobId}}/cancel`, {{ method: "POST" }});
+        const payload = await resp.json();
+        if (!resp.ok || !payload.ok) {{
+          throw new Error(payload.error?.message || `HTTP ${{resp.status}}`);
+        }}
+        renderJob(payload.job);
+      }} catch (err) {{
+        cancelBtn.disabled = false;
+        statusEl.textContent = `取消失败: ${{err.message}}`;
       }}
     }});
   </script>
@@ -726,23 +995,32 @@ def _pick_available_port(host: str, preferred_port: int, max_tries: int = 20) ->
 class SemiWebHandler(BaseHTTPRequestHandler):
     server_version = "semi-utils-web/2.0"
 
+    def _path_only(self) -> str:
+        return self.path.split("?", 1)[0]
+
     def do_GET(self) -> None:
-        if self.path == "/" or self.path.startswith("/?"):
+        path = self._path_only()
+        if path == "/":
             self._send_bytes(HTTPStatus.OK, _build_html(), "text/html; charset=utf-8")
             return
 
-        if self.path == "/health":
+        if path == "/health":
             self._send_json(HTTPStatus.OK.value, _json_bytes({"ok": True, "time": int(time.time())}))
             return
 
-        if self.path.startswith("/api/jobs/"):
+        if path.startswith("/api/jobs/"):
             self._handle_get_job()
             return
 
         self._send_bytes(HTTPStatus.NOT_FOUND, b"Not Found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:
-        if self.path != "/api/process":
+        path = self._path_only()
+        if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+            self._handle_cancel_job()
+            return
+
+        if path != "/api/process":
             self._send_json(*_error_response(HTTPStatus.NOT_FOUND, "not_found", "Endpoint not found"))
             return
 
@@ -841,6 +1119,7 @@ class SemiWebHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "job_id": job_id,
                     "status_url": f"/api/jobs/{job_id}",
+                    "cancel_url": f"/api/jobs/{job_id}/cancel",
                     "download_url": f"/api/jobs/{job_id}/download",
                 }),
             )
@@ -855,7 +1134,7 @@ class SemiWebHandler(BaseHTTPRequestHandler):
 
     def _handle_get_job(self) -> None:
         # /api/jobs/<job_id> or /api/jobs/<job_id>/download
-        parts = [part for part in self.path.split("/") if part]
+        parts = [part for part in self._path_only().split("/") if part]
         if len(parts) < 3:
             self._send_json(*_error_response(HTTPStatus.NOT_FOUND, "not_found", "Invalid job path"))
             return
@@ -894,6 +1173,25 @@ class SemiWebHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(*_error_response(HTTPStatus.NOT_FOUND, "not_found", "Invalid job endpoint"))
+
+    def _handle_cancel_job(self) -> None:
+        # /api/jobs/<job_id>/cancel
+        parts = [part for part in self._path_only().split("/") if part]
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs" or parts[3] != "cancel":
+            self._send_json(*_error_response(HTTPStatus.NOT_FOUND, "not_found", "Invalid job path"))
+            return
+
+        job_id = parts[2]
+        job, state = _request_cancel(job_id)
+        if not job:
+            self._send_json(*_error_response(HTTPStatus.NOT_FOUND, "job_not_found", "Job not found or expired"))
+            return
+        if state == "terminal":
+            self._send_json(
+                *_error_response(HTTPStatus.CONFLICT, "cannot_cancel", f"Job already finished with status {job.status}")
+            )
+            return
+        self._send_json(HTTPStatus.ACCEPTED.value, _json_bytes(_serialize_job(job)))
 
     def log_message(self, format: str, *args: Any) -> None:
         return
