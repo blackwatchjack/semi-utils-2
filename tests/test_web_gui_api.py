@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from http.server import ThreadingHTTPServer
+from PIL import Image
 
 import web_gui_app
 from web_gui_app import SemiWebHandler
@@ -137,6 +138,8 @@ class TestWebGuiApi:
         assert job["status"] == "done"
         assert job["mode"] == "normal"
         assert job["output_count"] >= 1
+        assert len(job["results_available"]) == job["progress"]["total"]
+        assert all(job["results_available"])
 
         status, headers, data = self.client.request("GET", f"/api/jobs/{job_id}/download")
         assert status == 200
@@ -156,6 +159,8 @@ class TestWebGuiApi:
         assert job["status"] == "done"
         assert job["mode"] == "preview"
         assert job["output_count"] >= 1
+        assert len(job["results_available"]) == job["progress"]["total"]
+        assert all(job["results_available"])
 
         status, _, data = self.client.request("GET", f"/api/jobs/{job_id}/download")
         assert status == 200
@@ -166,6 +171,93 @@ class TestWebGuiApi:
             report = json.loads(zf.read("report.json").decode("utf-8"))
             assert report["mode"] == "preview"
             assert report["error_count"] == 0
+
+    def test_get_single_result_image(self):
+        job_id = self._create_job(preview=False)
+        job = self._wait_done(job_id)
+        assert job["status"] == "done"
+        assert job["results_available"][0] is True
+
+        status, headers, data = self.client.request("GET", f"/api/jobs/{job_id}/results/0")
+        assert status == 200
+        assert headers.get("Content-Type", "").startswith("image/")
+
+        with Image.open(io.BytesIO(data)) as image:
+            assert image.width > 0
+            assert image.height > 0
+
+    def test_results_available_updates_during_polling(self, monkeypatch):
+        def fake_process_images(inputs, output_dir=None, on_progress=None, **kwargs):
+            total = len(inputs)
+            for index, raw_source in enumerate(inputs, start=1):
+                source_path = Path(raw_source)
+                target_path = Path(output_dir) / source_path.name
+                Image.new("RGB", (50, 30), color=(index * 20, 10, 10)).save(target_path, format="JPEG")
+                if on_progress:
+                    on_progress(index, total, source_path, None)
+                time.sleep(0.25)
+            return []
+
+        monkeypatch.setattr(web_gui_app, "process_images", fake_process_images)
+
+        body, boundary = _multipart_body(
+            {"layout": "watermark_right_logo", "quality": "90"},
+            [
+                ("files", "sample1.jpeg", self.sample_image, "image/jpeg"),
+                ("files", "sample2.jpeg", self.sample_image, "image/jpeg"),
+            ],
+        )
+        status, _, data = self.client.request(
+            "POST",
+            "/api/process",
+            body=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        assert status == 202
+        job_id = json.loads(data.decode("utf-8"))["job_id"]
+
+        partial_seen = False
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            status, _, data = self.client.request("GET", f"/api/jobs/{job_id}")
+            assert status == 200
+            job = json.loads(data.decode("utf-8"))["job"]
+            available = job["results_available"]
+            if available == [True, False]:
+                partial_seen = True
+                break
+            if job["status"] in {"done", "error", "cancelled"}:
+                break
+            time.sleep(0.05)
+        assert partial_seen is True
+
+        final_job = self._wait_done(job_id)
+        assert final_job["results_available"] == [True, True]
+
+    def test_visibility_endpoint_resets_hidden_values(self):
+        fields = {
+            "layout": "simple",
+            "background_color": "#abcdef",
+            "logo_enable": "on",
+            "font": "./fonts/custom-font.ttf",
+            "alternative_font": "./fonts/Roboto-Light.ttf",
+            "element_left_top_name": "Model",
+            "element_left_top_value": "dirty",
+        }
+        body, boundary = _multipart_body(fields, [])
+        status, _, data = self.client.request(
+            "POST",
+            "/api/visibility",
+            body=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        assert status == 200
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is True
+        assert payload["visibility"]["layout.logo_enable"] is False
+        assert payload["visibility"]["base.alternative_font"] is True
+        assert payload["config"]["layout"]["logo_enable"] is False
+        assert payload["config"]["layout"]["background_color"] == web_gui_app.DEFAULTS["layout"]["background_color"]
 
     def test_extended_config_fields_are_forwarded(self, monkeypatch):
         captured: dict[str, dict] = {}
@@ -203,14 +295,20 @@ class TestWebGuiApi:
         assert config_data["base"]["bold_font_size"] == 2
         assert config_data["base"]["font"] == "./fonts/Roboto-Regular.ttf"
         assert config_data["base"]["bold_font"] == "./fonts/Roboto-Bold.ttf"
-        assert config_data["base"]["alternative_font"] == "./fonts/Roboto-Light.ttf"
-        assert config_data["base"]["alternative_bold_font"] == "./fonts/Roboto-Medium.ttf"
+        assert config_data["base"]["alternative_font"] == web_gui_app.DEFAULTS["base"]["alternative_font"]
+        assert config_data["base"]["alternative_bold_font"] == web_gui_app.DEFAULTS["base"]["alternative_bold_font"]
         assert config_data["layout"]["elements"]["left_top"]["name"] == "Custom"
         assert config_data["layout"]["elements"]["left_top"]["value"] == "Semi Utils"
-        assert config_data["layout"]["elements"]["left_top"]["color"] == "#123456"
-        assert config_data["layout"]["elements"]["left_top"]["is_bold"] is True
-        assert config_data["layout"]["elements"]["left_bottom"]["color"] == "#654321"
-        assert config_data["layout"]["elements"]["right_bottom"]["is_bold"] is True
+        assert config_data["layout"]["elements"]["left_top"]["color"] == web_gui_app.DEFAULTS["layout"]["elements"]["left_top"]["color"]
+        assert config_data["layout"]["elements"]["left_top"]["is_bold"] == web_gui_app.DEFAULTS["layout"]["elements"]["left_top"]["is_bold"]
+        assert (
+            config_data["layout"]["elements"]["left_bottom"]["color"]
+            == web_gui_app.DEFAULTS["layout"]["elements"]["left_bottom"]["color"]
+        )
+        assert (
+            config_data["layout"]["elements"]["right_bottom"]["is_bold"]
+            == web_gui_app.DEFAULTS["layout"]["elements"]["right_bottom"]["is_bold"]
+        )
 
     def test_reject_invalid_extension(self):
         body, boundary = _multipart_body(

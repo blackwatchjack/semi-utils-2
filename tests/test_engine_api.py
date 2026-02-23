@@ -14,6 +14,8 @@ def test_get_config_spec_basics():
     assert spec["version"] == 1
     assert "defaults" in spec
     assert "fields" in spec
+    assert "ui" in spec
+    assert "visibility_paths" in spec["ui"]
     assert any(field["path"] == "layout.type" for field in spec["fields"])
     element_values = {item["value"] for item in spec["enums"]["element_name"]}
     assert "FocusDistance" in element_values

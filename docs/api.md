@@ -29,9 +29,11 @@ engine.get_config_spec() -> dict
 ## Web GUI API（补充）
 
 1. `POST /api/process`：提交任务，返回 `job_id`。
-1. `GET /api/jobs/<job_id>`：查询任务状态与进度。
+1. `GET /api/jobs/<job_id>`：查询任务状态与进度（含 `results_available`）。
+1. `GET /api/jobs/<job_id>/results/<index>`：按输入顺序获取单张处理结果图。
 1. `POST /api/jobs/<job_id>/cancel`：取消任务（运行中/等待中/排队中）。
 1. `GET /api/jobs/<job_id>/download`：任务完成后下载 ZIP。
+1. `POST /api/visibility`：根据当前参数返回可见字段与隐藏字段重置后的配置。
 1. 任务状态包含：`queued`、`waiting`、`running`、`cancelling`、`cancelled`、`done`、`error`。
 
 ## 入参与行为

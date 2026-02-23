@@ -59,6 +59,7 @@ from enums.constant import PARAM_NAME
 from enums.constant import PARAM_VALUE
 from enums.constant import TOTAL_PIXEL_NAME
 from enums.constant import TOTAL_PIXEL_VALUE
+from ui_visibility import managed_paths
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,10 @@ def get_config_spec() -> dict:
             ],
         },
         "fields": fields,
+        "ui": {
+            "visibility_paths": managed_paths(),
+            "positions": ["left_top", "left_bottom", "right_top", "right_bottom"],
+        },
     }
 
 
