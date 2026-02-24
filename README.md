@@ -40,15 +40,21 @@
 
 GUI 支持：
 - 批量选择图片与输出目录
+- 三栏界面（图片缩略图 / 处理后预览 / 参数区），支持预览缩放与切换
 - 核心布局/质量/白边/阴影/Logo 参数
 - 文本元素选择与自定义文本（含颜色、粗体）
 - 字体配置（字体大小级别、字体路径、备用字体路径）
+- 参数可见性联动（布局切换时隐藏字段自动回落默认值）
 - 预览模式（生成临时预览图并可点击打开）
 - 处理进度与错误日志
 
 Web GUI 支持：
 - 浏览器上传多张图片并处理
+- 三栏 Web 界面（输入缩略图 / 处理后预览 / 参数配置）
 - 任务化处理（提交任务、轮询进度、完成后下载 ZIP）
+- 任务轮询中可逐步查看可用结果（`results_available`）
+- 支持按输入索引查看单图结果预览
+- 参数可见性接口驱动的前后端一致行为（`POST /api/visibility`）
 - 任务取消（运行中/排队中任务）
 - 任务并发限流（默认最多 2 个并发处理任务）
 - 下载处理结果 ZIP（含 `report.json` 与失败明细）
@@ -56,12 +62,24 @@ Web GUI 支持：
 
 Web API（供前端或外部调用）：
 - `POST /api/process`：提交任务（multipart/form-data）
-- `GET /api/jobs/<job_id>`：查询任务状态与进度
+- `GET /api/jobs/<job_id>`：查询任务状态与进度（含 `results_available`）
+- `GET /api/jobs/<job_id>/results/<index>`：按输入顺序获取单张处理结果图
 - `POST /api/jobs/<job_id>/cancel`：取消任务
 - `GET /api/jobs/<job_id>/download`：下载 ZIP 结果（任务完成后）
+- `POST /api/visibility`：返回字段可见性与隐藏字段重置后的配置
 - `GET /health`：健康检查
+任务状态包含：`queued`、`waiting`、`running`、`cancelling`、`cancelled`、`done`、`error`。
 
 并发上限可通过环境变量 `SEMI_WEB_MAX_CONCURRENT_JOBS` 配置（最小 1，最大 16）。
+
+**当前进度（截至 2026-02-24）**
+- 已完成无状态化改造：移除 CLI 与 `config.yaml` 依赖，统一入口为 `engine.process_images(...)`
+- 已完成桌面 GUI + Web GUI 双入口及一键启动脚本（`start_gui.sh`、`start_web_gui.sh`）
+- 已完成 Web 任务化流程：提交、轮询、取消、下载 ZIP，并支持并发限流
+- 已完成 macOS `.app` 打包流水线与 Tk 不兼容场景“内嵌 WebView 优先、浏览器兜底”安全回退
+- 已完成桌面/Web 三栏 UI 重构，支持按输入索引查看单图结果预览
+- 已完成参数可见性联动与隐藏字段默认值回落（`ui_visibility.sanitize_config`、`POST /api/visibility`）
+- 已补齐相关测试覆盖：核心 API、GUI 回退、Web API、可见性规则、EXIFTool 缺失降级等
 
 **快速使用（Python 调用）**
 ```python
@@ -129,6 +147,11 @@ log_path = setup_temp_logging()
 桌面 GUI / Web GUI 默认会保留运行日志（便于定位失败）：
 - 桌面 GUI：`/tmp/semi-utils-desktop-<pid>.log`
 - Web GUI：`/tmp/semi-utils-web-<pid>.log`
+
+**近期计划（P1）**
+- 统一运行环境约束（固定使用项目内 `.venv` 用于开发与测试）
+- 补齐 `engine.process_images(...)` 核心行为测试（`output_map > output_dir > 原路径` 优先级、`on_progress/on_error/on_preview` 回调、预览模式 EXIF 不保留）
+- 补齐 Web 任务生命周期异常路径测试（下载前状态校验、任务过期清理、取消后结果一致性）
 
 **开发/测试**
 - 本项目自带虚拟环境，运行脚本或测试前先激活：`source .venv/bin/activate`
