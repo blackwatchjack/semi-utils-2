@@ -28,12 +28,12 @@ dist/semi-utils.app
    - `third_party/exiftool/`
 1. Tk 不兼容（如 macOS + Tk 8.5）时，优先在 app 内嵌 WebView 打开 Web GUI。
 
-## ExifTool 固定来源
+## ExifTool 自动来源与校验
 
-- 版本：`13.50`
-- 下载地址：`https://exiftool.org/Image-ExifTool-13.50.tar.gz`
-- SHA256：`27e2d66eb21568cc0d59520f89afcaaa50735e1ad9fa4b36d0a4ccf916c70d31`
-- 本地元信息文件：`third_party/exiftool/VERSION.txt`
+- 版本来源：`https://exiftool.org/ver.txt`（可用 `EXIFTOOL_VERSION` 环境变量覆盖）
+- 下载地址：`https://exiftool.org/Image-ExifTool-<version>.tar.gz`
+- SHA256 来源：`https://exiftool.org/checksums.txt`（构建时动态解析并校验）
+- 本地元信息文件：`third_party/exiftool/VERSION.txt`（含 version/url/sha256/checksum_source）
 
 ## 验收建议
 

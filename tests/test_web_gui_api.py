@@ -132,6 +132,15 @@ class TestWebGuiApi:
         payload = json.loads(data.decode("utf-8"))
         assert payload["ok"] is True
 
+    def test_homepage_includes_drag_drop_support(self):
+        status, _, data = self.client.request("GET", "/")
+        assert status == 200
+        html = data.decode("utf-8")
+        assert 'id="leftPanel"' in html
+        assert ".left-panel.drop-active" in html
+        assert "leftPanel.addEventListener(\"drop\", onLeftPanelDrop);" in html
+        assert "event.dataTransfer.files" in html
+
     def test_normal_process_flow(self):
         job_id = self._create_job(preview=False)
         job = self._wait_done(job_id)
@@ -147,11 +156,9 @@ class TestWebGuiApi:
 
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             names = zf.namelist()
-            assert "report.json" in names
-            assert any(name.startswith("output/") for name in names)
-            report = json.loads(zf.read("report.json").decode("utf-8"))
-            assert report["mode"] == "normal"
-            assert report["error_count"] == 0
+            assert "report.json" not in names
+            assert all("/" not in name for name in names)
+            assert any(Path(name).suffix.lower() in {".jpg", ".jpeg", ".png"} for name in names)
 
     def test_preview_process_flow(self):
         job_id = self._create_job(preview=True)
@@ -166,11 +173,9 @@ class TestWebGuiApi:
         assert status == 200
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             names = zf.namelist()
-            assert "report.json" in names
-            assert any(name.startswith("preview/") for name in names)
-            report = json.loads(zf.read("report.json").decode("utf-8"))
-            assert report["mode"] == "preview"
-            assert report["error_count"] == 0
+            assert "report.json" not in names
+            assert all("/" not in name for name in names)
+            assert any(Path(name).suffix.lower() in {".jpg", ".jpeg", ".png"} for name in names)
 
     def test_get_single_result_image(self):
         job_id = self._create_job(preview=False)
@@ -414,3 +419,118 @@ class TestWebGuiApi:
         second_job = self._wait_done(second_job_id, timeout_sec=5.0)
         assert first_job["status"] == "done"
         assert second_job["status"] == "done"
+
+    def test_download_before_done_returns_result_not_ready(self, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_process_images(inputs, on_progress=None, **kwargs):
+            started.set()
+            release.wait(timeout=5.0)
+            if on_progress:
+                on_progress(1, 1, Path(inputs[0]), None)
+            return []
+
+        monkeypatch.setattr(web_gui_app, "process_images", fake_process_images)
+
+        job_id = self._create_job(preview=False)
+        assert started.wait(timeout=2.0)
+
+        status, _, data = self.client.request("GET", f"/api/jobs/{job_id}/download")
+        assert status == 409
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "result_not_ready"
+
+        release.set()
+        job = self._wait_done(job_id, timeout_sec=5.0)
+        assert job["status"] == "done"
+
+    def test_expired_done_job_is_cleaned_up(self, monkeypatch):
+        job_id = self._create_job(preview=False)
+        job = self._wait_done(job_id)
+        assert job["status"] == "done"
+
+        monkeypatch.setattr(web_gui_app, "JOB_TTL_SECONDS", 0)
+        web_gui_app._cleanup_expired_jobs()
+
+        status, _, data = self.client.request("GET", f"/api/jobs/{job_id}")
+        assert status == 404
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "job_not_found"
+
+    def test_cancel_waiting_job_keeps_consistent_result_state(self, monkeypatch):
+        set_max_concurrent_jobs_for_tests(1)
+        release = threading.Event()
+        started_count = 0
+        started_lock = threading.Lock()
+
+        def fake_process_images(inputs, on_progress=None, **kwargs):
+            nonlocal started_count
+            with started_lock:
+                started_count += 1
+            release.wait(timeout=5.0)
+            if on_progress:
+                on_progress(1, 1, Path(inputs[0]), None)
+            return []
+
+        monkeypatch.setattr(web_gui_app, "process_images", fake_process_images)
+
+        first_job_id = self._create_job(preview=False)
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            status, _, data = self.client.request("GET", f"/api/jobs/{first_job_id}")
+            assert status == 200
+            payload = json.loads(data.decode("utf-8"))
+            if payload["job"]["status"] == "running":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("First job did not enter running state")
+
+        second_job_id = self._create_job(preview=False)
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            status, _, data = self.client.request("GET", f"/api/jobs/{second_job_id}")
+            assert status == 200
+            payload = json.loads(data.decode("utf-8"))
+            if payload["job"]["status"] == "waiting":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("Second job did not enter waiting state")
+
+        status, _, data = self.client.request("POST", f"/api/jobs/{second_job_id}/cancel")
+        assert status == 202
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is True
+        assert payload["job"]["status"] == "cancelled"
+
+        waiting_job = self._wait_done(second_job_id, timeout_sec=5.0)
+        assert waiting_job["status"] == "cancelled"
+        assert waiting_job["cancel_requested"] is True
+        assert started_count == 1
+
+        status, _, data = self.client.request("GET", f"/api/jobs/{second_job_id}/download")
+        assert status == 409
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "result_not_ready"
+
+        release.set()
+        first_job = self._wait_done(first_job_id, timeout_sec=5.0)
+        assert first_job["status"] == "done"
+
+    def test_cancel_done_job_returns_conflict(self):
+        job_id = self._create_job(preview=False)
+        job = self._wait_done(job_id)
+        assert job["status"] == "done"
+
+        status, _, data = self.client.request("POST", f"/api/jobs/{job_id}/cancel")
+        assert status == 409
+        payload = json.loads(data.decode("utf-8"))
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "cannot_cancel"

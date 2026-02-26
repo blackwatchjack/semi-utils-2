@@ -2,14 +2,41 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-EXIFTOOL_VERSION="13.50"
-EXIFTOOL_SHA256="27e2d66eb21568cc0d59520f89afcaaa50735e1ad9fa4b36d0a4ccf916c70d31"
-EXIFTOOL_ARCHIVE="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
-EXIFTOOL_URL="https://exiftool.org/${EXIFTOOL_ARCHIVE}"
+EXIFTOOL_BASE_URL="https://exiftool.org"
+CHECKSUMS_URL="${EXIFTOOL_BASE_URL}/checksums.txt"
+EXIFTOOL_VERSION="${EXIFTOOL_VERSION:-}"
 TARGET_DIR="${ROOT_DIR}/third_party/exiftool"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
+
+if [[ -z "${EXIFTOOL_VERSION}" ]]; then
+  EXIFTOOL_VERSION="$(curl -fsSL --retry 3 --retry-delay 1 "${EXIFTOOL_BASE_URL}/ver.txt" | tr -d '\r\n')"
+fi
+
+if [[ ! "${EXIFTOOL_VERSION}" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+  echo "Invalid ExifTool version: ${EXIFTOOL_VERSION}"
+  exit 1
+fi
+
+EXIFTOOL_ARCHIVE="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
+EXIFTOOL_URL="${EXIFTOOL_BASE_URL}/${EXIFTOOL_ARCHIVE}"
+
+EXIFTOOL_SHA256="$(
+  curl -fsSL --retry 3 --retry-delay 1 "${CHECKSUMS_URL}" \
+    | awk -v archive="${EXIFTOOL_ARCHIVE}" '
+      index($0, "SHA2-256(" archive ")=") {
+        gsub(/\r/, "");
+        print $NF;
+        exit;
+      }
+    '
+)"
+
+if [[ -z "${EXIFTOOL_SHA256}" ]]; then
+  echo "Failed to find SHA256 for ${EXIFTOOL_ARCHIVE} in ${CHECKSUMS_URL}"
+  exit 1
+fi
 
 archive_path="${tmp_dir}/${EXIFTOOL_ARCHIVE}"
 echo "Downloading ${EXIFTOOL_URL}"
@@ -37,6 +64,7 @@ cat > "${TARGET_DIR}/VERSION.txt" <<EOF
 version=${EXIFTOOL_VERSION}
 url=${EXIFTOOL_URL}
 sha256=${EXIFTOOL_SHA256}
+checksum_source=${CHECKSUMS_URL}
 EOF
 
 echo "ExifTool prepared at ${TARGET_DIR}"

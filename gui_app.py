@@ -11,7 +11,10 @@ from pathlib import Path
 from tkinter import filedialog
 from tkinter import messagebox
 from tkinter import ttk
+from typing import Callable
 from typing import Any
+from urllib.parse import unquote
+from urllib.parse import urlparse
 
 from PIL import Image
 from PIL import ImageTk
@@ -21,6 +24,124 @@ from engine import process_images
 from logging_setup import setup_temp_logging
 from ui_visibility import POSITIONS
 from ui_visibility import sanitize_config
+
+try:
+    from tkinterdnd2 import DND_FILES
+    from tkinterdnd2 import TkinterDnD
+except Exception:  # pragma: no cover - import fallback depends on runtime
+    DND_FILES = None
+    TkinterDnD = None
+
+ALLOWED_INPUT_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+
+
+def build_input_identity(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (path.name, int(stat.st_size), int(stat.st_mtime_ns))
+
+
+def normalize_dropped_path(raw: str) -> Path | None:
+    text = raw.strip()
+    if not text:
+        return None
+    if text.startswith("{") and text.endswith("}"):
+        text = text[1:-1].strip()
+        if not text:
+            return None
+
+    if text.lower().startswith("file://"):
+        parsed = urlparse(text)
+        converted = unquote(parsed.path or "")
+        if parsed.netloc and parsed.netloc != "localhost":
+            converted = f"//{parsed.netloc}{converted}"
+        if os.name == "nt" and converted.startswith("/") and len(converted) > 2 and converted[2] == ":":
+            converted = converted[1:]
+        text = converted
+
+    return Path(text)
+
+
+def _fallback_split_dropped_data(raw_data: str) -> list[str]:
+    parts: list[str] = []
+    token: list[str] = []
+    in_brace = False
+    for ch in raw_data:
+        if ch == "{" and not in_brace:
+            in_brace = True
+            if token:
+                parts.append("".join(token).strip())
+                token = []
+            continue
+        if ch == "}" and in_brace:
+            in_brace = False
+            parts.append("".join(token).strip())
+            token = []
+            continue
+        if ch.isspace() and not in_brace:
+            if token:
+                parts.append("".join(token).strip())
+                token = []
+            continue
+        token.append(ch)
+    if token:
+        parts.append("".join(token).strip())
+    return [part for part in parts if part]
+
+
+def parse_dropped_paths(raw_data: str, splitlist: Callable[[str], tuple[str, ...]] | None = None) -> list[Path]:
+    data = raw_data.strip()
+    if not data:
+        return []
+
+    items: list[str]
+    if splitlist is not None:
+        try:
+            items = [str(item) for item in splitlist(data)]
+        except Exception:
+            items = _fallback_split_dropped_data(data)
+    else:
+        items = _fallback_split_dropped_data(data)
+
+    paths: list[Path] = []
+    for item in items:
+        normalized = normalize_dropped_path(item)
+        if normalized is not None:
+            paths.append(normalized)
+    return paths
+
+
+def select_valid_input_paths(
+    candidates: list[Path],
+    existing_identities: set[tuple[str, int, int]] | None = None,
+) -> tuple[list[Path], dict[str, int], set[tuple[str, int, int]]]:
+    identities = set(existing_identities or set())
+    skipped = {"duplicate": 0, "invalid_type": 0, "not_file": 0}
+    accepted: list[Path] = []
+
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.exists() or not path.is_file():
+            skipped["not_file"] += 1
+            continue
+        if path.suffix.lower() not in ALLOWED_INPUT_EXTENSIONS:
+            skipped["invalid_type"] += 1
+            continue
+
+        identity = build_input_identity(path)
+        if identity is None:
+            skipped["not_file"] += 1
+            continue
+        if identity in identities:
+            skipped["duplicate"] += 1
+            continue
+
+        identities.add(identity)
+        accepted.append(path)
+
+    return accepted, skipped, identities
 
 
 def should_fallback_to_web(system: str, mac_major: int, tk_version: float) -> bool:
@@ -69,9 +190,19 @@ def run_safe_web_fallback(host: str = "127.0.0.1", port: int = 8765) -> None:
             server_thread.join(timeout=1.0)
 
 
+def create_desktop_root() -> tuple[tk.Tk, bool]:
+    if TkinterDnD is None:
+        return tk.Tk(), False
+    try:
+        return TkinterDnD.Tk(), True
+    except Exception:
+        return tk.Tk(), False
+
+
 class SemiUtilsGuiApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, dnd_available: bool = False):
         self.root = root
+        self._dnd_available = dnd_available
         self.root.title("semi-utils 图形界面")
         self.root.geometry("1480x920")
         self.root.minsize(1160, 760)
@@ -121,12 +252,16 @@ class SemiUtilsGuiApp:
         self._syncing_visibility = False
         self._field_visibility: dict[str, bool] = {}
         self._group_rows: dict[str, list[tuple[str | None, ttk.Frame]]] = {}
+        self.left_panel: ttk.LabelFrame | None = None
+        self.left_toolbar: ttk.Frame | None = None
+        self.left_list_frame: ttk.Frame | None = None
 
         self.current_preview_index = -1
         self.active_preview_mode = False
 
         self._build_variables()
         self._build_ui()
+        self._setup_drag_and_drop()
         self._bind_visibility_events()
         self._apply_visibility_rules()
         self._refresh_control_state()
@@ -213,10 +348,12 @@ class SemiUtilsGuiApp:
 
     def _build_left_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.LabelFrame(parent, text="图片与缩略图")
+        self.left_panel = panel
         panel.grid(row=0, column=0, sticky=tk.NS, padx=(0, 8))
         panel.configure(width=300)
 
         toolbar = ttk.Frame(panel)
+        self.left_toolbar = toolbar
         toolbar.pack(fill=tk.X, padx=8, pady=8)
 
         self.add_btn = ttk.Button(toolbar, text="上传", command=self._add_files)
@@ -227,6 +364,7 @@ class SemiUtilsGuiApp:
         self.clear_btn.pack(side=tk.LEFT)
 
         list_frame = ttk.Frame(panel)
+        self.left_list_frame = list_frame
         list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
         y_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
@@ -510,6 +648,28 @@ class SemiUtilsGuiApp:
         self.log_text = tk.Text(right, height=7, wrap=tk.WORD)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
+    def _setup_drag_and_drop(self) -> None:
+        if not self._dnd_available or DND_FILES is None:
+            self._log("未检测到 tkinterdnd2，拖拽添加不可用，请使用“上传”按钮。")
+            return
+
+        targets = [self.left_panel, self.left_toolbar, self.left_list_frame, self.input_tree]
+        attached = 0
+        for widget in targets:
+            if widget is None:
+                continue
+            try:
+                widget.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+                widget.dnd_bind("<<Drop>>", self._on_left_panel_drop)  # type: ignore[attr-defined]
+                attached += 1
+            except Exception:
+                continue
+
+        if attached > 0:
+            self._log("左侧栏已启用拖拽添加图片。")
+        else:
+            self._log("拖拽初始化失败，请使用“上传”按钮。")
+
     def _bind_visibility_events(self) -> None:
         trigger_vars: list[tk.Variable] = [
             self.layout_var,
@@ -644,6 +804,67 @@ class SemiUtilsGuiApp:
         self.log_text.insert(tk.END, text + "\n")
         self.log_text.see(tk.END)
 
+    def _current_input_identities(self) -> set[tuple[str, int, int]]:
+        identities: set[tuple[str, int, int]] = set()
+        for path in self.input_paths:
+            identity = build_input_identity(path)
+            if identity is not None:
+                identities.add(identity)
+        return identities
+
+    @staticmethod
+    def _build_add_summary(source: str, added: int, skipped: dict[str, int]) -> str:
+        details: list[str] = []
+        if skipped.get("duplicate", 0) > 0:
+            details.append(f"重复 {skipped['duplicate']} 张")
+        if skipped.get("invalid_type", 0) > 0:
+            details.append(f"格式不支持 {skipped['invalid_type']} 张")
+        if skipped.get("not_file", 0) > 0:
+            details.append(f"无效路径 {skipped['not_file']} 项")
+
+        if added > 0 and not details:
+            return f"{source}新增 {added} 张图片。"
+        if added > 0:
+            return f"{source}新增 {added} 张，跳过：{'，'.join(details)}。"
+        if details:
+            return f"{source}未新增图片，跳过：{'，'.join(details)}。"
+        return f"{source}未新增图片。"
+
+    def _add_input_paths(self, candidates: list[Path], source: str) -> None:
+        if not candidates:
+            return
+
+        if self._is_running():
+            message = "处理中不可添加图片，请等待任务完成。"
+            self.status_var.set(message)
+            self._log(f"{source}：{message}")
+            return
+
+        accepted, skipped, _identities = select_valid_input_paths(
+            candidates,
+            existing_identities=self._current_input_identities(),
+        )
+
+        if accepted:
+            self.input_paths.extend(accepted)
+            if self.current_preview_index < 0:
+                self.current_preview_index = 0
+            self.result_paths = [None] * len(self.input_paths)
+            self.path_to_index = {path: idx for idx, path in enumerate(self.input_paths)}
+            self._refresh_input_tree()
+            self._refresh_preview_image()
+            self._refresh_control_state()
+
+        summary = self._build_add_summary(source, len(accepted), skipped)
+        self.status_var.set(summary)
+        self._log(summary)
+
+    def _on_left_panel_drop(self, event: Any) -> str:
+        raw_data = str(getattr(event, "data", "") or "")
+        dropped = parse_dropped_paths(raw_data, self.root.tk.splitlist)
+        self._add_input_paths(dropped, source="拖拽")
+        return "break"
+
     def _add_files(self) -> None:
         selected = filedialog.askopenfilenames(
             title="选择图片",
@@ -652,19 +873,7 @@ class SemiUtilsGuiApp:
                 ("所有文件", "*.*"),
             ],
         )
-        for raw in selected:
-            path = Path(raw)
-            if path not in self.input_paths:
-                self.input_paths.append(path)
-
-        if self.input_paths and self.current_preview_index < 0:
-            self.current_preview_index = 0
-
-        self.result_paths = [None] * len(self.input_paths)
-        self.path_to_index = {path: idx for idx, path in enumerate(self.input_paths)}
-        self._refresh_input_tree()
-        self._refresh_preview_image()
-        self._refresh_control_state()
+        self._add_input_paths([Path(raw) for raw in selected], source="上传")
 
     def _remove_selected_input(self) -> None:
         selection = self.input_tree.selection()
@@ -994,8 +1203,8 @@ def main() -> None:
         return
 
     log_path = setup_temp_logging(name_prefix="semi-utils-desktop", cleanup_on_exit=False)
-    root = tk.Tk()
-    app = SemiUtilsGuiApp(root)
+    root, dnd_available = create_desktop_root()
+    app = SemiUtilsGuiApp(root, dnd_available=dnd_available)
     app._log("GUI 已就绪。")
     app._log(f"运行日志文件：{log_path}")
     root.mainloop()

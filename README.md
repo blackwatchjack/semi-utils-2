@@ -9,12 +9,18 @@
 - 批量处理与可选输出目录
 - 预览模式（临时文件、可指定最大边与质量）
 
+**初始化（统一使用项目内 `.venv`）**
+```bash
+./install.sh
+```
+
 **快速使用（GUI）**
 ```bash
 ./start_gui.sh
 ```
 
 说明：
+- 启动脚本固定使用项目内 `.venv`。
 - 在支持 Tk 的环境会启动桌面 GUI。
 - 若检测到 macOS + Tk 8.5 不兼容运行时，会自动切换到“安全 Web 模式”：
   - 优先在 `.app` 内打开内嵌 WebView 窗口。
@@ -34,12 +40,13 @@
 - 单命令产出 `dist/semi-utils.app`
 - 构建脚本会自动安装 PyInstaller（在项目 `.venv` 中）
 - 构建脚本会自动安装 `pywebview`（用于 Tk 不兼容场景的 app 内嵌 Web 模式）
-- 构建时固定下载并校验 ExifTool `13.50`（SHA256 已写入脚本）
+- 构建时自动获取最新 ExifTool 版本并从官方 `checksums.txt` 动态校验 SHA256
 - 打包产物内置字体、logos、images、ExifTool，无需依赖系统 `python/pip`
 - 详细步骤见 `docs/macos_app.md`
 
 GUI 支持：
 - 批量选择图片与输出目录
+- 左侧栏支持拖拽添加图片（追加并去重，自动过滤无效路径/格式）
 - 三栏界面（图片缩略图 / 处理后预览 / 参数区），支持预览缩放与切换
 - 核心布局/质量/白边/阴影/Logo 参数
 - 文本元素选择与自定义文本（含颜色、粗体）
@@ -50,6 +57,7 @@ GUI 支持：
 
 Web GUI 支持：
 - 浏览器上传多张图片并处理
+- 左侧栏支持整块区域拖拽添加图片（追加并去重，前端过滤格式/大小/数量并提示）
 - 三栏 Web 界面（输入缩略图 / 处理后预览 / 参数配置）
 - 任务化处理（提交任务、轮询进度、完成后下载 ZIP）
 - 任务轮询中可逐步查看可用结果（`results_available`）
@@ -57,7 +65,7 @@ Web GUI 支持：
 - 参数可见性接口驱动的前后端一致行为（`POST /api/visibility`）
 - 任务取消（运行中/排队中任务）
 - 任务并发限流（默认最多 2 个并发处理任务）
-- 下载处理结果 ZIP（含 `report.json` 与失败明细）
+- 下载处理结果 ZIP（仅含处理后的图片文件，位于 ZIP 根目录）
 - 支持预览模式 ZIP 下载
 
 Web API（供前端或外部调用）：
@@ -70,9 +78,14 @@ Web API（供前端或外部调用）：
 - `GET /health`：健康检查
 任务状态包含：`queued`、`waiting`、`running`、`cancelling`、`cancelled`、`done`、`error`。
 
-并发上限可通过环境变量 `SEMI_WEB_MAX_CONCURRENT_JOBS` 配置（最小 1，最大 16）。
+Web 运行阈值支持环境变量覆盖（括号内为默认值）：
+- `SEMI_WEB_MAX_FILES`（`200`）
+- `SEMI_WEB_MAX_REQUEST_BYTES`（`536870912`，即 `512MB`）
+- `SEMI_WEB_MAX_FILE_BYTES`（`67108864`，即 `64MB`）
+- `SEMI_WEB_JOB_TTL_SECONDS`（`1800`，即 `30` 分钟）
+- `SEMI_WEB_MAX_CONCURRENT_JOBS`（`2`，最小 `1`，最大 `16`）
 
-**当前进度（截至 2026-02-24）**
+**当前进度（截至 2026-02-25）**
 - 已完成无状态化改造：移除 CLI 与 `config.yaml` 依赖，统一入口为 `engine.process_images(...)`
 - 已完成桌面 GUI + Web GUI 双入口及一键启动脚本（`start_gui.sh`、`start_web_gui.sh`）
 - 已完成 Web 任务化流程：提交、轮询、取消、下载 ZIP，并支持并发限流
@@ -80,6 +93,10 @@ Web API（供前端或外部调用）：
 - 已完成桌面/Web 三栏 UI 重构，支持按输入索引查看单图结果预览
 - 已完成参数可见性联动与隐藏字段默认值回落（`ui_visibility.sanitize_config`、`POST /api/visibility`）
 - 已补齐相关测试覆盖：核心 API、GUI 回退、Web API、可见性规则、EXIFTool 缺失降级等
+- 已补齐 `engine.process_images(...)` 核心行为测试（输出路径优先级、回调、预览 EXIF 行为）
+- 已补齐 Web 生命周期异常路径测试（下载前校验、任务过期清理、取消一致性）
+- 已统一开发/运行脚本默认使用项目内 `.venv`
+- 已支持 Web 关键阈值环境变量覆盖（含默认值文档）
 
 **快速使用（Python 调用）**
 ```python
@@ -149,13 +166,12 @@ log_path = setup_temp_logging()
 - Web GUI：`/tmp/semi-utils-web-<pid>.log`
 
 **近期计划（P1）**
-- 统一运行环境约束（固定使用项目内 `.venv` 用于开发与测试）
-- 补齐 `engine.process_images(...)` 核心行为测试（`output_map > output_dir > 原路径` 优先级、`on_progress/on_error/on_preview` 回调、预览模式 EXIF 不保留）
-- 补齐 Web 任务生命周期异常路径测试（下载前状态校验、任务过期清理、取消后结果一致性）
+- 建立批量处理性能基线（固定样本、耗时与吞吐输出）
 
 **开发/测试**
-- 本项目自带虚拟环境，运行脚本或测试前先激活：`source .venv/bin/activate`
-- 若需要测试框架，请在虚拟环境内安装依赖（例如 `pytest`）
+- 建议统一使用项目内 `.venv`：
+  - `./install.sh`
+  - `.venv/bin/python -m pytest -q`
 
 **布局列表**
 通过 `engine.get_layout_specs()` 获取布局列表（id 与名称）。

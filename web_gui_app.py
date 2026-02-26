@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from typing import Mapping
 
 from PIL import Image
 
@@ -38,24 +39,60 @@ DEFAULTS = copy.deepcopy(SPEC["defaults"])
 VISIBILITY_PATHS = managed_paths()
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-MAX_FILES = 200
-MAX_REQUEST_BYTES = 512 * 1024 * 1024
-MAX_FILE_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_FILES = 200
+DEFAULT_MAX_REQUEST_BYTES = 512 * 1024 * 1024
+DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_LIVE_JOBS = 500
 DEFAULT_MAX_CONCURRENT_JOBS = 2
-JOB_TTL_SECONDS = 30 * 60
+DEFAULT_JOB_TTL_SECONDS = 30 * 60
 CLEANUP_INTERVAL_SECONDS = 60
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, "JobRecord"] = {}
 CLEANUP_THREAD_STARTED = False
 
-try:
-    _env_concurrent_jobs = int(os.environ.get("SEMI_WEB_MAX_CONCURRENT_JOBS", str(DEFAULT_MAX_CONCURRENT_JOBS)))
-except (TypeError, ValueError):
-    _env_concurrent_jobs = DEFAULT_MAX_CONCURRENT_JOBS
+def _env_int(
+    environ: Mapping[str, str],
+    key: str,
+    default: int,
+    low: int | None = None,
+    high: int | None = None,
+) -> int:
+    raw = environ.get(key)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        value = default
+    if low is not None and value < low:
+        value = low
+    if high is not None and value > high:
+        value = high
+    return value
 
-MAX_CONCURRENT_JOBS = max(1, min(_env_concurrent_jobs, 16))
+
+def _load_runtime_limits(environ: Mapping[str, str] | None = None) -> dict[str, int]:
+    env = os.environ if environ is None else environ
+    return {
+        "max_files": _env_int(env, "SEMI_WEB_MAX_FILES", DEFAULT_MAX_FILES, low=1),
+        "max_request_bytes": _env_int(env, "SEMI_WEB_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES, low=1),
+        "max_file_bytes": _env_int(env, "SEMI_WEB_MAX_FILE_BYTES", DEFAULT_MAX_FILE_BYTES, low=1),
+        "job_ttl_seconds": _env_int(env, "SEMI_WEB_JOB_TTL_SECONDS", DEFAULT_JOB_TTL_SECONDS, low=1),
+        "max_concurrent_jobs": _env_int(
+            env,
+            "SEMI_WEB_MAX_CONCURRENT_JOBS",
+            DEFAULT_MAX_CONCURRENT_JOBS,
+            low=1,
+            high=16,
+        ),
+    }
+
+
+_RUNTIME_LIMITS = _load_runtime_limits()
+MAX_FILES = _RUNTIME_LIMITS["max_files"]
+MAX_REQUEST_BYTES = _RUNTIME_LIMITS["max_request_bytes"]
+MAX_FILE_BYTES = _RUNTIME_LIMITS["max_file_bytes"]
+JOB_TTL_SECONDS = _RUNTIME_LIMITS["job_ttl_seconds"]
+MAX_CONCURRENT_JOBS = _RUNTIME_LIMITS["max_concurrent_jobs"]
 RUNNING_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 POSITIONS: tuple[tuple[str, str], ...] = (
     ("left_top", "Left Top"),
@@ -317,11 +354,10 @@ def _extract_uploads(form: cgi.FieldStorage, input_dir: Path) -> list[Path]:
     return input_paths
 
 
-def _create_zip(output_files: list[Path], report: dict[str, Any], target_zip: Path, folder: str) -> None:
+def _create_zip(output_files: list[Path], target_zip: Path) -> None:
     with zipfile.ZipFile(target_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in output_files:
-            zf.write(file_path, arcname=f"{folder}/{file_path.name}")
-        zf.writestr("report.json", json.dumps(report, ensure_ascii=False, indent=2))
+            zf.write(file_path, arcname=file_path.name)
 
 
 def _cleanup_expired_jobs() -> None:
@@ -525,36 +561,25 @@ def _run_job(job_id: str) -> None:
 
         if job.preview_mode:
             output_files = [path for path in preview_paths if path.exists()]
-            folder = "preview"
             filename = "semi-utils-preview.zip"
-            mode = "preview"
         else:
             output_files = [
                 (output_dir / source_path.name)
                 for source_path in job.input_paths
                 if output_dir is not None and (output_dir / source_path.name).exists()
             ]
-            folder = "output"
             filename = "semi-utils-output.zip"
-            mode = "normal"
-
-        report = {
-            "total_inputs": len(job.input_paths),
-            "mode": mode,
-            "output_count": len(output_files),
-            "error_count": len(errors),
-            "errors": [{"source": str(src), "error": str(exc)} for src, exc in errors],
-        }
+        processed_errors = [{"source": str(src), "error": str(exc)} for src, exc in errors]
 
         zip_path = job.workspace_dir / filename
-        _create_zip(output_files, report, zip_path, folder)
+        _create_zip(output_files, zip_path)
 
         _update_job(
             job_id,
             status="done",
             message="Completed",
             output_count=len(output_files),
-            errors=report["errors"],
+            errors=processed_errors,
             zip_path=zip_path,
             output_filename=filename,
             current=len(job.input_paths),
@@ -659,6 +684,12 @@ def _build_html() -> bytes:
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+    }}
+    .left-panel.drop-active {{
+      border-color: #6aa4d3;
+      box-shadow: 0 0 0 2px rgba(57, 137, 199, 0.18), var(--shadow);
+      background: linear-gradient(165deg, #fafdff, #f2f8ff);
     }}
     .thumb-toolbar {{
       display: flex;
@@ -936,7 +967,7 @@ def _build_html() -> bytes:
 
     <form id="processForm" class="workspace" method="post" action="/api/process" enctype="multipart/form-data">
       <div class="main-grid">
-        <section class="panel left-panel">
+        <section id="leftPanel" class="panel left-panel">
           <div class="panel-title">输入图片与缩略图</div>
           <div class="thumb-toolbar">
             <button id="addFilesBtn" type="button">上传</button>
@@ -1154,6 +1185,7 @@ def _build_html() -> bytes:
 
   <script>
     var form = document.getElementById("processForm");
+    var leftPanel = document.getElementById("leftPanel");
     var fileInput = document.getElementById("fileInput");
     var addFilesBtn = document.getElementById("addFilesBtn");
     var removeFileBtn = document.getElementById("removeFileBtn");
@@ -1195,6 +1227,8 @@ def _build_html() -> bytes:
     var previewQualityInput = document.getElementById("previewQualityInput");
 
     var customValueKey = {json.dumps(CUSTOM_VALUE)};
+    var maxFiles = {MAX_FILES};
+    var maxFileBytes = {MAX_FILE_BYTES};
     var positions = ["left_top", "left_bottom", "right_top", "right_bottom"];
     var inputNames = [];
     var inputFiles = [];
@@ -1261,18 +1295,122 @@ def _build_html() -> bytes:
       previewUrls = [];
     }}
 
-    function addFiles(fileList) {{
-      for (var i = 0; i < fileList.length; i += 1) {{
-        var file = fileList[i];
-        inputFiles.push(file);
-        inputNames.push(file.name);
-        previewUrls.push(URL.createObjectURL(file));
+    function isAllowedImageExt(filename) {{
+      if (!filename) {{
+        return false;
       }}
+      var lower = String(filename).toLowerCase();
+      return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png");
+    }}
+
+    function fileIdentityKey(file) {{
+      return (
+        String(file.name || "") +
+        "|" +
+        String(file.size || 0) +
+        "|" +
+        String(file.lastModified || 0)
+      );
+    }}
+
+    function buildAddSummary(sourceLabel, result) {{
+      var details = [];
+      if (result.duplicate > 0) {{
+        details.push("重复 " + result.duplicate + " 张");
+      }}
+      if (result.invalidType > 0) {{
+        details.push("格式不支持 " + result.invalidType + " 张");
+      }}
+      if (result.tooLarge > 0) {{
+        details.push("超过单文件限制 " + result.tooLarge + " 张");
+      }}
+      if (result.limitExceeded > 0) {{
+        details.push("超过最大数量 " + result.limitExceeded + " 张");
+      }}
+      if (result.emptyName > 0) {{
+        details.push("无有效文件名 " + result.emptyName + " 项");
+      }}
+
+      if (result.added > 0 && details.length === 0) {{
+        return sourceLabel + "新增 " + result.added + " 张图片。";
+      }}
+      if (result.added > 0) {{
+        return sourceLabel + "新增 " + result.added + " 张，跳过：" + details.join("，") + "。";
+      }}
+      if (details.length > 0) {{
+        return sourceLabel + "未新增图片，跳过：" + details.join("，") + "。";
+      }}
+      return sourceLabel + "未新增图片。";
+    }}
+
+    function addFiles(fileList, sourceLabel) {{
+      if (submitBtn.disabled) {{
+        summaryText.textContent = "处理中不可添加图片，请等待任务完成。";
+        return;
+      }}
+      if (!fileList || !fileList.length) {{
+        return;
+      }}
+
+      var label = sourceLabel || "上传";
+      var result = {{
+        added: 0,
+        duplicate: 0,
+        invalidType: 0,
+        tooLarge: 0,
+        limitExceeded: 0,
+        emptyName: 0,
+      }};
+
+      var existingKeys = new Set();
+      for (var i = 0; i < inputFiles.length; i += 1) {{
+        existingKeys.add(fileIdentityKey(inputFiles[i]));
+      }}
+
+      var acceptedFiles = [];
+      for (var index = 0; index < fileList.length; index += 1) {{
+        var file = fileList[index];
+        if (!file || !file.name) {{
+          result.emptyName += 1;
+          continue;
+        }}
+
+        var identity = fileIdentityKey(file);
+        if (existingKeys.has(identity)) {{
+          result.duplicate += 1;
+          continue;
+        }}
+        if (!isAllowedImageExt(file.name)) {{
+          result.invalidType += 1;
+          continue;
+        }}
+        if (file.size > maxFileBytes) {{
+          result.tooLarge += 1;
+          continue;
+        }}
+        if (inputFiles.length + acceptedFiles.length >= maxFiles) {{
+          result.limitExceeded += 1;
+          continue;
+        }}
+
+        existingKeys.add(identity);
+        acceptedFiles.push(file);
+      }}
+
+      for (var acceptedIndex = 0; acceptedIndex < acceptedFiles.length; acceptedIndex += 1) {{
+        var accepted = acceptedFiles[acceptedIndex];
+        inputFiles.push(accepted);
+        inputNames.push(accepted.name);
+        previewUrls.push(URL.createObjectURL(accepted));
+      }}
+
+      result.added = acceptedFiles.length;
       if (selectedIndex < 0 && inputFiles.length > 0) {{
         selectedIndex = 0;
       }}
       renderThumbList();
       renderPreview();
+      summaryText.textContent = buildAddSummary(label, result);
     }}
 
     function removeSelectedFile() {{
@@ -1645,15 +1783,75 @@ def _build_html() -> bytes:
       }}
     }}
 
+    var leftPanelDragDepth = 0;
+
+    function clearLeftPanelDropActive() {{
+      leftPanelDragDepth = 0;
+      leftPanel.classList.remove("drop-active");
+    }}
+
+    function onLeftPanelDragEnter(event) {{
+      event.preventDefault();
+      if (submitBtn.disabled) {{
+        return;
+      }}
+      leftPanelDragDepth += 1;
+      leftPanel.classList.add("drop-active");
+    }}
+
+    function onLeftPanelDragOver(event) {{
+      event.preventDefault();
+      if (submitBtn.disabled) {{
+        return;
+      }}
+      event.dataTransfer.dropEffect = "copy";
+      leftPanel.classList.add("drop-active");
+    }}
+
+    function onLeftPanelDragLeave(event) {{
+      if (!leftPanel.classList.contains("drop-active")) {{
+        return;
+      }}
+      if (leftPanelDragDepth > 0) {{
+        leftPanelDragDepth -= 1;
+      }}
+      if (leftPanelDragDepth > 0) {{
+        return;
+      }}
+
+      var rect = leftPanel.getBoundingClientRect();
+      var inside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      if (!inside) {{
+        clearLeftPanelDropActive();
+      }}
+    }}
+
+    function onLeftPanelDrop(event) {{
+      event.preventDefault();
+      clearLeftPanelDropActive();
+      if (!event.dataTransfer || !event.dataTransfer.files || event.dataTransfer.files.length <= 0) {{
+        return;
+      }}
+      addFiles(event.dataTransfer.files, "拖拽");
+    }}
+
     addFilesBtn.addEventListener("click", function() {{
       fileInput.click();
     }});
     fileInput.addEventListener("change", function() {{
       if (fileInput.files && fileInput.files.length > 0) {{
-        addFiles(fileInput.files);
+        addFiles(fileInput.files, "上传");
       }}
       fileInput.value = "";
     }});
+    leftPanel.addEventListener("dragenter", onLeftPanelDragEnter);
+    leftPanel.addEventListener("dragover", onLeftPanelDragOver);
+    leftPanel.addEventListener("dragleave", onLeftPanelDragLeave);
+    leftPanel.addEventListener("drop", onLeftPanelDrop);
     removeFileBtn.addEventListener("click", removeSelectedFile);
     clearFilesBtn.addEventListener("click", clearFiles);
 

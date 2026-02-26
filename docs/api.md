@@ -36,6 +36,14 @@ engine.get_config_spec() -> dict
 1. `POST /api/visibility`：根据当前参数返回可见字段与隐藏字段重置后的配置。
 1. 任务状态包含：`queued`、`waiting`、`running`、`cancelling`、`cancelled`、`done`、`error`。
 
+## Web 运行时环境变量
+
+1. `SEMI_WEB_MAX_FILES`：单次任务最大文件数，默认 `200`。
+1. `SEMI_WEB_MAX_REQUEST_BYTES`：单次请求体最大字节数，默认 `536870912`（`512MB`）。
+1. `SEMI_WEB_MAX_FILE_BYTES`：单文件最大字节数，默认 `67108864`（`64MB`）。
+1. `SEMI_WEB_JOB_TTL_SECONDS`：任务完成后保留时长，默认 `1800` 秒（`30` 分钟）。
+1. `SEMI_WEB_MAX_CONCURRENT_JOBS`：并发任务上限，默认 `2`，范围 `1..16`。
+
 ## 入参与行为
 
 1. `inputs`: 文件列表（字符串或 Path）。按顺序处理，进度顺序与输入顺序一致。

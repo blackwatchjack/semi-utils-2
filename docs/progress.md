@@ -20,8 +20,12 @@
 1. 已修复 CI 失效配置，改为跨平台测试流水线。
 1. 新增运行时资源路径解析（源码运行与 PyInstaller 运行统一处理）。
 1. ExifTool 解析逻辑升级为“环境变量 > 内置资源 > 系统 PATH”，缺失时降级并告警。
-1. 新增 macOS 一键打包脚本（`scripts/macos/build_app.sh`）与 ExifTool 固定下载校验脚本（`scripts/macos/fetch_exiftool.sh`）。
+1. 新增 macOS 一键打包脚本（`scripts/macos/build_app.sh`）与 ExifTool 自动最新下载+动态校验脚本（`scripts/macos/fetch_exiftool.sh`）。
 1. 新增 macOS 打包文档 `docs/macos_app.md`，明确产物路径与验收流程。
 1. 桌面 GUI 参数与状态文案已中文化，提升可用性。
 1. Tk 不兼容场景回退升级为“app 内嵌 WebView 优先，浏览器兜底”。
 1. 修复内嵌 WebView 下任务提交后跳 JSON 页的问题（前端脚本降级为兼容模式）。
+1. 补齐 `engine.process_images(...)` 核心行为测试（输出优先级、回调、预览 EXIF 行为）。
+1. 补齐 Web 任务生命周期异常路径测试（下载前状态校验、任务过期清理、取消一致性）。
+1. 统一开发运行环境约束：安装与启动脚本默认使用项目内 `.venv`。
+1. Web 关键阈值改为环境变量可覆盖（`SEMI_WEB_MAX_FILES`、`SEMI_WEB_MAX_REQUEST_BYTES`、`SEMI_WEB_MAX_FILE_BYTES`、`SEMI_WEB_JOB_TTL_SECONDS`）。

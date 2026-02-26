@@ -1,6 +1,7 @@
 # runtime
 pillow==10.3.0
 python-dateutil==2.8.2
+tkinterdnd2>=0.4,<0.5
 
 # dev/test
 pytest>=7.0
