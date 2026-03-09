@@ -44,6 +44,69 @@ class ExifId(Enum):
 
 PATTERN = re.compile(r"(\d+)\.")  # 匹配小数
 FOCUS_DISTANCE_PATTERN = re.compile(r"""^\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*([a-zA-Z"']*)\s*$""")
+FILENAME_SEPARATOR_PATTERN = re.compile(r"""[\s._\-()\[\]{}+,;:/\\]+""")
+DATETIME_FILENAME_PATTERN = re.compile(
+    r"""\b(?:19|20)\d{2}[-_/]?(?:0[1-9]|1[0-2])[-_/]?(?:0[1-9]|[12]\d|3[01])(?:[-_ ]?(?:[01]\d|2[0-3])[0-5]\d[0-5]\d)?\b"""
+)
+TIME_FILENAME_PATTERN = re.compile(r"""\b(?:[01]\d|2[0-3])[0-5]\d[0-5]\d\b""")
+ISO_FILENAME_PATTERN = re.compile(r"""^iso\d+$""", re.IGNORECASE)
+FOCAL_FILENAME_PATTERN = re.compile(r"""^\d+(?:\.\d+)?mm$""", re.IGNORECASE)
+F_NUMBER_FILENAME_PATTERN = re.compile(r"""^f/?\d+(?:\.\d+)?$""", re.IGNORECASE)
+SHUTTER_FILENAME_PATTERN = re.compile(r"""^(?:\d+/\d+|\d+(?:\.\d+)?)s$""", re.IGNORECASE)
+EV_FILENAME_PATTERN = re.compile(r"""^ev[+-]?\d+(?:\.\d+)?$""", re.IGNORECASE)
+CAMERA_TOKEN_PATTERN = re.compile(r"""^[A-Z]{2,10}\d{2,}$""")
+UPPERCASE_SHORT_TOKEN_PATTERN = re.compile(r"""^[A-Z]{2,10}$""")
+CHINESE_TOKEN_PATTERN = re.compile(r"""[\u4e00-\u9fff]+""")
+ENGLISH_TOKEN_PATTERN = re.compile(r"""[A-Za-z]+""")
+BIRD_NOISE_WORDS = {
+    "img",
+    "dxo",
+    "dsc",
+    "dscf",
+    "dscn",
+    "pxl",
+    "mvimg",
+    "mvi",
+    "dji",
+    "wechatimg",
+    "screenshot",
+    "photo",
+    "pic",
+    "image",
+    "raw",
+    "jpeg",
+    "jpg",
+    "png",
+    "heic",
+    "edit",
+    "edited",
+    "enhanced",
+    "enhance",
+    "denoise",
+    "denoised",
+    "noisereduction",
+    "noise",
+    "reduction",
+    "final",
+    "copy",
+    "export",
+}
+BIRD_NOISE_PHRASES = (
+    "已增强",
+    "增强",
+    "已降噪",
+    "降噪",
+    "去噪",
+    "锐化",
+    "去雾",
+    "后期",
+    "已处理",
+    "处理后",
+    "已修图",
+    "修图",
+    "调色",
+    "滤镜",
+)
 FOCUS_DISTANCE_UNITS_TO_M = {
     "m": 1,
     "cm": 0.01,
@@ -128,6 +191,63 @@ def get_focus_distance(exif: dict) -> str:
         if normalized:
             return normalized
     return ''
+
+
+def extract_bird_species_from_filename(stem: str) -> str:
+    filename = str(stem).strip()
+    if not filename:
+        return DEFAULT_VALUE
+
+    # 先整体清理日期/时间模式，避免拆分后留下碎片。
+    cleaned = DATETIME_FILENAME_PATTERN.sub(" ", filename)
+    cleaned = TIME_FILENAME_PATTERN.sub(" ", cleaned)
+    for phrase in BIRD_NOISE_PHRASES:
+        cleaned = cleaned.replace(phrase, " ")
+    cleaned = FILENAME_SEPARATOR_PATTERN.sub(" ", cleaned)
+    tokens = cleaned.split()
+
+    results: list[str] = []
+    for token in tokens:
+        if not token:
+            continue
+        lower = token.lower()
+
+        if lower in BIRD_NOISE_WORDS:
+            continue
+        if (
+            ISO_FILENAME_PATTERN.fullmatch(token)
+            or FOCAL_FILENAME_PATTERN.fullmatch(token)
+            or F_NUMBER_FILENAME_PATTERN.fullmatch(token)
+            or SHUTTER_FILENAME_PATTERN.fullmatch(token)
+            or EV_FILENAME_PATTERN.fullmatch(token)
+        ):
+            continue
+        if CAMERA_TOKEN_PATTERN.fullmatch(token):
+            continue
+        if re.search(r"\d", token):
+            continue
+        if UPPERCASE_SHORT_TOKEN_PATTERN.fullmatch(token):
+            continue
+
+        chinese_parts = CHINESE_TOKEN_PATTERN.findall(token)
+        if chinese_parts:
+            results.append("".join(chinese_parts))
+            continue
+
+        english_parts = ENGLISH_TOKEN_PATTERN.findall(token)
+        if not english_parts:
+            continue
+        english = "".join(english_parts)
+        if len(english) <= 1:
+            continue
+        if english.lower() in BIRD_NOISE_WORDS:
+            continue
+        if not re.search(r"[a-z]", english):
+            continue
+        results.append(english)
+
+    bird_species = " ".join(results).strip()
+    return bird_species if bird_species else DEFAULT_VALUE
 
 
 def get_datetime(exif) -> datetime:
@@ -216,6 +336,7 @@ class ImageContainer(object):
         self._param_dict[LENS_VALUE] = self.lens_model
         filename_without_ext = os.path.splitext(self.path.name)[0]
         self._param_dict[FILENAME_VALUE] = filename_without_ext
+        self._param_dict[BIRD_SPECIES_VALUE] = extract_bird_species_from_filename(filename_without_ext)
         self._param_dict[TOTAL_PIXEL_VALUE] = calculate_pixel_count(self.original_width, self.original_height)
         self._param_dict[FOCUS_DISTANCE_VALUE] = self.focus_distance
 

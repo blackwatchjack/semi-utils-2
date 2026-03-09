@@ -29,6 +29,8 @@ from enums.constant import CAMERA_MAKE_CAMERA_MODEL_NAME
 from enums.constant import CAMERA_MAKE_CAMERA_MODEL_VALUE
 from enums.constant import CAMERA_MODEL_LENS_MODEL_NAME
 from enums.constant import CAMERA_MODEL_LENS_MODEL_VALUE
+from enums.constant import BIRD_SPECIES_NAME
+from enums.constant import BIRD_SPECIES_VALUE
 from enums.constant import CUSTOM_NAME
 from enums.constant import CUSTOM_VALUE
 from enums.constant import DATE_FILENAME_NAME
@@ -120,6 +122,7 @@ def get_config_spec() -> dict:
         {"value": FILENAME_VALUE, "label": FILENAME_NAME},
         {"value": DATE_FILENAME_VALUE, "label": DATE_FILENAME_NAME},
         {"value": DATETIME_FILENAME_VALUE, "label": DATETIME_FILENAME_NAME},
+        {"value": BIRD_SPECIES_VALUE, "label": BIRD_SPECIES_NAME},
         {"value": GEO_INFO_VALUE, "label": GEO_INFO},
         {"value": FOCUS_DISTANCE_VALUE, "label": FOCUS_DISTANCE_NAME},
     ]
